@@ -11,6 +11,8 @@ import (
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
 
+// cidelee
+
 // getBotToken environment variable'dan bot token'ı alır
 func getBotToken() string {
 	token := os.Getenv("TELEGRAM_BOT_TOKEN")
@@ -22,13 +24,13 @@ func getBotToken() string {
 
 // UserSession kullanıcının UTM oluşturma sürecindeki durumunu tutar
 type UserSession struct {
-	Step       int    // Hangi adımda olduğu (1-6)
-	SourceURL  string // Kaynak URL
-	UTMSource  string // utm_source
-	UTMMedium  string // utm_medium
-	Campaign   string // utm_campaign
-	Content    string // utm_content
-	Term       string // utm_term (opsiyonel)
+	Step      int    // Hangi adımda olduğu (1-6)
+	SourceURL string // Kaynak URL
+	UTMSource string // utm_source
+	UTMMedium string // utm_medium
+	Campaign  string // utm_campaign
+	Content   string // utm_content
+	Term      string // utm_term (opsiyonel)
 }
 
 // sessions tüm kullanıcı oturumlarını tutar
