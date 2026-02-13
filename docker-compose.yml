@@ -1,0 +1,8 @@
+services:
+  utm-builder-bot:
+    image: ${DOCKER_USERNAME:-local}/utm-builder-bot:latest
+    build: .
+    container_name: utm-builder-bot
+    restart: unless-stopped
+    environment:
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
