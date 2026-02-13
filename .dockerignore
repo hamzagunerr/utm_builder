@@ -1,0 +1,8 @@
+utm-builder-bot
+*.exe
+*.log
+.git
+.gitignore
+README.md
+Dockerfile
+.dockerignore
