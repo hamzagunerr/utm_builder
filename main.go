@@ -124,14 +124,30 @@ func startFiberServer() {
 		AppName: "UTM Builder Bot API",
 	})
 
-	// CORS middleware - hayratyardim.org'dan gelen isteklere izin ver
+	app.Use(func(c *fiber.Ctx) error {
+		if c.Method() == "OPTIONS" {
+			return c.Next()
+		}
+
+		return logger.New(logger.Config{
+			Format:     "${method} ${path} - ${status} - ${latency}\n",
+			TimeFormat: "02-Jan-2006 15:04:05",
+			TimeZone:   "Local",
+		})(c)
+	})
+
 	app.Use(cors.New(cors.Config{
-		AllowOrigins:     "https://www.hayratyardim.org, https://hayratyardim.org, http://localhost:3000",
-		AllowMethods:     "GET,POST,PUT,DELETE,OPTIONS,HEAD",
-		AllowHeaders:     "Origin, Content-Type, Accept, Authorization, X-Requested-With",
-		ExposeHeaders:    "Content-Length, Content-Type",
-		AllowCredentials: false,
-		MaxAge:           86400,
+		AllowOriginsFunc: func(origin string) bool {
+			if origin == "http://localhost:3061" || origin == "https://www.hayratyardim.org" || origin == "https://hayratyardim.org" {
+				return true
+			} else {
+				return false
+			}
+		},
+		AllowCredentials: true,
+		AllowMethods:     "GET,POST,PUT,DELETE,OPTIONS",
+		AllowHeaders:     "Origin, Content-Type, Accept, Authorization, X-Requested-With, X-User-Uuid",
+		AllowOrigins:     "http://localhost:3061",
 	}))
 
 	// Logger middleware
@@ -145,7 +161,7 @@ func startFiberServer() {
 	// Throw data endpoint
 	app.Post("/throw-data", handleThrowData)
 
-	port := getEnv("API_PORT", "3000")
+	port := getEnv("API_PORT", "3061")
 	log.Printf("Fiber API sunucusu başlatılıyor: :%s", port)
 
 	if err := app.Listen(":" + port); err != nil {
@@ -654,7 +670,7 @@ func handleOrtamlarCommand(bot *tgbotapi.BotAPI, chatID int64, args string) {
 // handleSonCommand /son komutunu işler - Son N bağış
 func handleSonCommand(bot *tgbotapi.BotAPI, chatID int64, args string) {
 	ctx := context.Background()
-	
+
 	// Varsayılan 5, argüman varsa onu kullan
 	limit := 5
 	if args != "" {
@@ -704,7 +720,7 @@ func handleSonCommand(bot *tgbotapi.BotAPI, chatID int64, args string) {
 // handleGunlukCommand /gunluk komutunu işler - Bugünün özeti
 func handleGunlukCommand(bot *tgbotapi.BotAPI, chatID int64) {
 	ctx := context.Background()
-	
+
 	// Bugünün başlangıcı ve sonu
 	now := time.Now()
 	startOfDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())

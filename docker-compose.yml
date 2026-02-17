@@ -5,12 +5,12 @@ services:
     container_name: utm-builder-bot
     restart: unless-stopped
     ports:
-      - "3000:3000"
+      - "3061:3061"
     environment:
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
       - NOTIFICATION_CHAT_ID=${NOTIFICATION_CHAT_ID}
       - DATABASE_URL=postgres://postgres:postgres@postgres:5432/utm_builder?sslmode=disable
-      - API_PORT=3000
+      - API_PORT=3061
     depends_on:
       postgres:
         condition: service_healthy
