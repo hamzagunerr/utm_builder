@@ -4,5 +4,32 @@ services:
     build: .
     container_name: utm-builder-bot
     restart: unless-stopped
+    ports:
+      - "3000:3000"
     environment:
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - NOTIFICATION_CHAT_ID=${NOTIFICATION_CHAT_ID}
+      - DATABASE_URL=postgres://postgres:postgres@postgres:5432/utm_builder?sslmode=disable
+      - API_PORT=3000
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: utm-builder-postgres
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=utm_builder
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:
