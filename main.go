@@ -126,10 +126,12 @@ func startFiberServer() {
 
 	// CORS middleware - hayratyardim.org'dan gelen isteklere izin ver
 	app.Use(cors.New(cors.Config{
-		AllowOrigins:     "https://www.hayratyardim.org, https://hayratyardim.org",
-		AllowMethods:     "GET,POST,OPTIONS",
-		AllowHeaders:     "Origin, Content-Type, Accept",
+		AllowOrigins:     "https://www.hayratyardim.org, https://hayratyardim.org, http://localhost:3000",
+		AllowMethods:     "GET,POST,PUT,DELETE,OPTIONS,HEAD",
+		AllowHeaders:     "Origin, Content-Type, Accept, Authorization, X-Requested-With",
+		ExposeHeaders:    "Content-Length, Content-Type",
 		AllowCredentials: false,
+		MaxAge:           86400,
 	}))
 
 	// Logger middleware
