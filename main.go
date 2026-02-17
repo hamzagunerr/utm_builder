@@ -43,16 +43,36 @@ func getBotToken() string {
 	return token
 }
 
-// getNotificationChatID bildirim gönderilecek chat ID'yi alır
-func getNotificationChatID() int64 {
-	chatIDStr := os.Getenv("NOTIFICATION_CHAT_ID")
-	if chatIDStr == "" {
-		log.Println("UYARI: NOTIFICATION_CHAT_ID ayarlanmamış, bildirimler gönderilemeyecek")
-		return 0
+// getNotificationChatIDs bildirim gönderilecek chat ID'lerini alır (virgülle ayrılmış)
+// Örnek: NOTIFICATION_CHAT_IDS=1026146458,-1001234567890
+func getNotificationChatIDs() []int64 {
+	chatIDsStr := os.Getenv("NOTIFICATION_CHAT_IDS")
+	// Eski format desteği (tek ID)
+	if chatIDsStr == "" {
+		chatIDsStr = os.Getenv("NOTIFICATION_CHAT_ID")
 	}
-	var chatID int64
-	fmt.Sscanf(chatIDStr, "%d", &chatID)
-	return chatID
+	if chatIDsStr == "" {
+		log.Println("UYARI: NOTIFICATION_CHAT_IDS ayarlanmamış, bildirimler gönderilemeyecek")
+		return nil
+	}
+
+	var chatIDs []int64
+	parts := strings.Split(chatIDsStr, ",")
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		var chatID int64
+		if _, err := fmt.Sscanf(part, "%d", &chatID); err == nil && chatID != 0 {
+			chatIDs = append(chatIDs, chatID)
+		}
+	}
+
+	if len(chatIDs) > 0 {
+		log.Printf("Bildirimler %d hedefe gönderilecek: %v", len(chatIDs), chatIDs)
+	}
+	return chatIDs
 }
 
 // Order veritabanı modeli
@@ -203,16 +223,18 @@ func handleThrowData(c *fiber.Ctx) error {
 		})
 	}
 
-	// Telegram'a bildirim gönder
-	chatID := getNotificationChatID()
-	if chatID != 0 && globalBot != nil {
+	// Telegram'a bildirim gönder (tüm hedeflere)
+	chatIDs := getNotificationChatIDs()
+	if len(chatIDs) > 0 && globalBot != nil {
 		message := formatOrderMessage(&req)
-		msg := tgbotapi.NewMessage(chatID, message)
-		msg.ParseMode = "HTML"
-		if _, err := globalBot.Send(msg); err != nil {
-			log.Printf("Telegram mesaj gönderme hatası: %v", err)
-		} else {
-			log.Printf("Telegram bildirimi gönderildi: chat_id=%d", chatID)
+		for _, chatID := range chatIDs {
+			msg := tgbotapi.NewMessage(chatID, message)
+			msg.ParseMode = "HTML"
+			if _, err := globalBot.Send(msg); err != nil {
+				log.Printf("Telegram mesaj gönderme hatası (chat_id=%d): %v", chatID, err)
+			} else {
+				log.Printf("Telegram bildirimi gönderildi: chat_id=%d", chatID)
+			}
 		}
 	}
 
