@@ -16,6 +16,7 @@ import (
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/cors"
 	"github.com/gofiber/fiber/v2/middleware/logger"
+	"github.com/robfig/cron/v3"
 	"github.com/uptrace/bun"
 	"github.com/uptrace/bun/dialect/pgdialect"
 	"github.com/uptrace/bun/driver/pgdriver"
@@ -379,6 +380,9 @@ func main() {
 
 	// Fiber sunucusunu ayrı goroutine'de başlat
 	go startFiberServer()
+
+	// Günlük analiz scheduler'ını başlat
+	go startDailyAnalysisScheduler()
 
 	// Update config
 	u := tgbotapi.NewUpdate(0)
@@ -813,10 +817,15 @@ func handleSonCommand(bot *tgbotapi.BotAPI, chatID int64, args string) {
 func handleGunlukCommand(bot *tgbotapi.BotAPI, chatID int64) {
 	ctx := context.Background()
 
-	// Bugünün başlangıcı ve sonu
-	now := time.Now()
-	startOfDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	// Türkiye saati için timezone
+	turkeyLoc, _ := time.LoadLocation("Europe/Istanbul")
+	now := time.Now().In(turkeyLoc)
+	startOfDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, turkeyLoc)
 	endOfDay := startOfDay.Add(24 * time.Hour)
+
+	// UTC'ye çevir (veritabanı UTC'de)
+	startOfDayUTC := startOfDay.UTC()
+	endOfDayUTC := endOfDay.UTC()
 
 	// Genel istatistikler
 	var stats struct {
@@ -827,8 +836,8 @@ func handleGunlukCommand(bot *tgbotapi.BotAPI, chatID int64) {
 		TableExpr("orders").
 		ColumnExpr("COALESCE(SUM(amount), 0) as total").
 		ColumnExpr("COUNT(*) as count").
-		Where("event_time >= ?", startOfDay).
-		Where("event_time < ?", endOfDay).
+		Where("event_time >= ?", startOfDayUTC).
+		Where("event_time < ?", endOfDayUTC).
 		Scan(ctx, &stats)
 
 	if err != nil {
@@ -846,37 +855,69 @@ func handleGunlukCommand(bot *tgbotapi.BotAPI, chatID int64) {
 	}
 	db.NewSelect().
 		TableExpr("orders").
-		ColumnExpr("COALESCE(utm_source, 'Bilinmiyor') as utm_source").
+		ColumnExpr("COALESCE(NULLIF(utm_source, ''), 'Doğrudan') as utm_source").
 		ColumnExpr("SUM(amount) as total").
 		ColumnExpr("COUNT(*) as count").
-		Where("event_time >= ?", startOfDay).
-		Where("event_time < ?", endOfDay).
+		Where("event_time >= ?", startOfDayUTC).
+		Where("event_time < ?", endOfDayUTC).
 		GroupExpr("utm_source").
 		OrderExpr("total DESC").
 		Scan(ctx, &sources)
 
+	// Türkçe gün adı
+	gunAdi := getTurkishDayName(now.Weekday())
+
 	var sb strings.Builder
-	sb.WriteString("☀️ <b>Bugünün Özeti</b>\n")
-	sb.WriteString(fmt.Sprintf("📅 %s\n\n", now.Format("02 Ocak 2006, Pazartesi")))
+	sb.WriteString("━━━━━━━━━━━━━━━━━━━━━━\n")
+	sb.WriteString("☀️ <b>GÜNLÜK RAPOR</b>\n")
+	sb.WriteString("━━━━━━━━━━━━━━━━━━━━━━\n\n")
+	sb.WriteString(fmt.Sprintf("📅 <b>Tarih:</b> %s, %s\n", now.Format("02 Ocak 2006"), gunAdi))
+	sb.WriteString(fmt.Sprintf("🕐 <b>Saat:</b> %s\n\n", now.Format("15:04")))
 
 	if stats.Count == 0 {
-		sb.WriteString("ℹ️ Bugün henüz bağış bulunmamaktadır.")
+		sb.WriteString("━━━━━━━━━━━━━━━━━━━━━━\n")
+		sb.WriteString("ℹ️ Bugün henüz bağış bulunmamaktadır.\n")
+		sb.WriteString("━━━━━━━━━━━━━━━━━━━━━━\n")
 	} else {
-		sb.WriteString(fmt.Sprintf("💰 <b>Toplam:</b> %.2f TRY\n", stats.Total))
-		sb.WriteString(fmt.Sprintf("🛒 <b>Bağış Sayısı:</b> %d\n", stats.Count))
-		sb.WriteString(fmt.Sprintf("📊 <b>Ortalama:</b> %.2f TRY\n\n", stats.Total/float64(stats.Count)))
+		sb.WriteString("━━━━━━━━━━━━━━━━━━━━━━\n")
+		sb.WriteString("💰 <b>GENEL ÖZET</b>\n")
+		sb.WriteString("━━━━━━━━━━━━━━━━━━━━━━\n\n")
+		sb.WriteString(fmt.Sprintf("   🛒 Bağış Sayısı    : <b>%d</b>\n", stats.Count))
+		sb.WriteString(fmt.Sprintf("   💵 Toplam Tutar    : <b>%.2f TRY</b>\n", stats.Total))
+		sb.WriteString(fmt.Sprintf("   📊 Ortalama        : <b>%.2f TRY</b>\n\n", stats.Total/float64(stats.Count)))
 
 		if len(sources) > 0 {
-			sb.WriteString("<b>Kaynak Dağılımı:</b>\n")
-			for _, s := range sources {
-				sb.WriteString(fmt.Sprintf("  • %s: %.2f TRY (%d)\n", s.UTMSource, s.Total, s.Count))
+			sb.WriteString("━━━━━━━━━━━━━━━━━━━━━━\n")
+			sb.WriteString("📡 <b>KAYNAK DAĞILIMI</b>\n")
+			sb.WriteString("━━━━━━━━━━━━━━━━━━━━━━\n\n")
+
+			for i, s := range sources {
+				emoji := getEmojiByRank(i)
+				percentage := (s.Total / stats.Total) * 100
+				sb.WriteString(fmt.Sprintf("%s <b>%s</b>\n", emoji, s.UTMSource))
+				sb.WriteString(fmt.Sprintf("   └ %.2f TRY | %d bağış | %%%.1f\n\n", s.Total, s.Count, percentage))
 			}
 		}
+		sb.WriteString("━━━━━━━━━━━━━━━━━━━━━━\n")
 	}
 
 	msg := tgbotapi.NewMessage(chatID, sb.String())
 	msg.ParseMode = "HTML"
 	bot.Send(msg)
+}
+
+// getTurkishDayName gün numarasını Türkçe gün adına çevirir
+func getTurkishDayName(day time.Weekday) string {
+	days := map[time.Weekday]string{
+		time.Sunday:    "Pazar",
+		time.Monday:    "Pazartesi",
+		time.Tuesday:   "Salı",
+		time.Wednesday: "Çarşamba",
+		time.Thursday:  "Perşembe",
+		time.Friday:    "Cuma",
+		time.Saturday:  "Cumartesi",
+	}
+	return days[day]
 }
 
 // handleOrtalamaCommand /ortalama komutunu işler - Ortalama bağış analizi
@@ -1657,4 +1698,169 @@ func replaceTurkishChars(s string) string {
 		}
 	}
 	return result.String()
+}
+
+// startDailyAnalysisScheduler günlük analiz scheduler'ını başlatır
+func startDailyAnalysisScheduler() {
+	// Türkiye saati için timezone (UTC+3)
+	turkeyLoc, err := time.LoadLocation("Europe/Istanbul")
+	if err != nil {
+		log.Printf("Timezone yüklenemedi, UTC kullanılacak: %v", err)
+		turkeyLoc = time.UTC
+	}
+
+	c := cron.New(cron.WithLocation(turkeyLoc))
+
+	// Her gün saat 12:00'de
+	c.AddFunc("0 12 * * *", func() {
+		log.Println("Günlük analiz raporu gönderiliyor (12:00)...")
+		sendDailyAnalysisReport("12:00")
+	})
+
+	// Her gün saat 18:00'de
+	c.AddFunc("0 18 * * *", func() {
+		log.Println("Günlük analiz raporu gönderiliyor (18:00)...")
+		sendDailyAnalysisReport("18:00")
+	})
+
+	// Her gün saat 23:59'da
+	c.AddFunc("59 23 * * *", func() {
+		log.Println("Günlük analiz raporu gönderiliyor (23:59)...")
+		sendDailyAnalysisReport("23:59")
+	})
+
+	c.Start()
+	log.Println("Günlük analiz scheduler başlatıldı (12:00, 18:00, 23:59 Türkiye saati)")
+}
+
+// sendDailyAnalysisReport günlük analiz raporunu Telegram'a gönderir
+func sendDailyAnalysisReport(reportTime string) {
+	if globalBot == nil || db == nil {
+		log.Println("Bot veya veritabanı hazır değil, rapor gönderilemedi")
+		return
+	}
+
+	chatIDs := getNotificationChatIDs()
+	if len(chatIDs) == 0 {
+		log.Println("Bildirim gönderilecek chat ID bulunamadı")
+		return
+	}
+
+	ctx := context.Background()
+
+	// Türkiye saati için timezone
+	turkeyLoc, _ := time.LoadLocation("Europe/Istanbul")
+	now := time.Now().In(turkeyLoc)
+	startOfDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, turkeyLoc)
+	endOfDay := startOfDay.Add(24 * time.Hour)
+
+	// UTC'ye çevir (veritabanı UTC'de)
+	startOfDayUTC := startOfDay.UTC()
+	endOfDayUTC := endOfDay.UTC()
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("📊 <b>Günlük Analiz Raporu</b>\n"))
+	sb.WriteString(fmt.Sprintf("📅 %s - Saat: %s\n\n", now.Format("02 Ocak 2006"), reportTime))
+
+	// 1. UTM Source / Medium bazlı analiz
+	var sourceStats []struct {
+		UTMSource string  `bun:"utm_source"`
+		UTMMedium string  `bun:"utm_medium"`
+		Total     float64 `bun:"total"`
+		Count     int     `bun:"count"`
+	}
+	err := db.NewSelect().
+		TableExpr("orders").
+		ColumnExpr("COALESCE(NULLIF(utm_source, ''), 'Bilinmiyor') as utm_source").
+		ColumnExpr("COALESCE(NULLIF(utm_medium, ''), 'Bilinmiyor') as utm_medium").
+		ColumnExpr("SUM(amount) as total").
+		ColumnExpr("COUNT(*) as count").
+		Where("event_time >= ?", startOfDayUTC).
+		Where("event_time < ?", endOfDayUTC).
+		GroupExpr("utm_source, utm_medium").
+		OrderExpr("total DESC").
+		Scan(ctx, &sourceStats)
+
+	if err != nil {
+		log.Printf("UTM analiz sorgu hatası: %v", err)
+	}
+
+	sb.WriteString("<b>📡 Kaynak/Ortam Bazlı Bağışlar:</b>\n")
+	if len(sourceStats) == 0 {
+		sb.WriteString("  • Henüz bağış yok\n")
+	} else {
+		for _, s := range sourceStats {
+			sb.WriteString(fmt.Sprintf("  • %s / %s\n", s.UTMSource, s.UTMMedium))
+			sb.WriteString(fmt.Sprintf("    💰 %.2f TRY (%d bağış)\n", s.Total, s.Count))
+		}
+	}
+	sb.WriteString("\n")
+
+	// 2. Bağış kalemi bazlı analiz
+	var itemStats []struct {
+		ItemName string  `bun:"item_name"`
+		Total    float64 `bun:"total"`
+		Count    int     `bun:"count"`
+	}
+	err = db.NewRaw(`
+		SELECT 
+			item->>'item_name' as item_name,
+			SUM((item->>'price')::numeric * (item->>'quantity')::numeric) as total,
+			SUM((item->>'quantity')::numeric)::int as count
+		FROM orders, jsonb_array_elements(items) as item
+		WHERE event_time >= ? AND event_time < ?
+		GROUP BY item->>'item_name'
+		ORDER BY total DESC
+	`, startOfDayUTC, endOfDayUTC).Scan(ctx, &itemStats)
+
+	if err != nil {
+		log.Printf("Bağış kalemi analiz sorgu hatası: %v", err)
+	}
+
+	sb.WriteString("<b>📦 Bağış Kalemi Bazlı:</b>\n")
+	if len(itemStats) == 0 {
+		sb.WriteString("  • Henüz bağış yok\n")
+	} else {
+		for _, item := range itemStats {
+			sb.WriteString(fmt.Sprintf("  • %s\n", item.ItemName))
+			sb.WriteString(fmt.Sprintf("    💰 %.2f TRY (%d adet)\n", item.Total, item.Count))
+		}
+	}
+	sb.WriteString("\n")
+
+	// 3. Toplam bağış miktarı
+	var totalStats struct {
+		Total float64 `bun:"total"`
+		Count int     `bun:"count"`
+	}
+	err = db.NewSelect().
+		TableExpr("orders").
+		ColumnExpr("COALESCE(SUM(amount), 0) as total").
+		ColumnExpr("COUNT(*) as count").
+		Where("event_time >= ?", startOfDayUTC).
+		Where("event_time < ?", endOfDayUTC).
+		Scan(ctx, &totalStats)
+
+	if err != nil {
+		log.Printf("Toplam analiz sorgu hatası: %v", err)
+	}
+
+	sb.WriteString("<b>💰 Günün Toplamı:</b>\n")
+	sb.WriteString(fmt.Sprintf("  • Toplam Bağış: %d adet\n", totalStats.Count))
+	sb.WriteString(fmt.Sprintf("  • Toplam Tutar: %.2f TRY\n", totalStats.Total))
+	if totalStats.Count > 0 {
+		sb.WriteString(fmt.Sprintf("  • Ortalama Bağış: %.2f TRY\n", totalStats.Total/float64(totalStats.Count)))
+	}
+
+	// Mesajı gönder
+	message := sb.String()
+	for _, chatID := range chatIDs {
+		msg := tgbotapi.NewMessage(chatID, message)
+		msg.ParseMode = "HTML"
+		if _, err := globalBot.Send(msg); err != nil {
+			log.Printf("Günlük analiz raporu gönderilemedi (chat_id=%d): %v", chatID, err)
+		} else {
+			log.Printf("Günlük analiz raporu gönderildi: chat_id=%d", chatID)
+		}
+	}
 }
