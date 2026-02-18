@@ -1395,34 +1395,61 @@ func getMediumEmoji(medium string) string {
 
 // sendWelcomeMessage hoş geldin mesajı gönderir
 func sendWelcomeMessage(bot *tgbotapi.BotAPI, chatID int64) {
-	welcomeText := `🔗 <b>Hayrat Yardım UTM Builder Bot'a Hoş Geldiniz!</b>
+	welcomeText := `━━━━━━━━━━━━━━━━━━━━━━
+🕌 <b>HAYRAT YARDIM</b>
+<b>Web Bağış Takip Botu</b>
+━━━━━━━━━━━━━━━━━━━━━━
 
-Bu bot, pazarlama kampanyalarınız için UTM parametreli linkler oluşturmanıza ve reklam performansını analiz etmenize yardımcı olur.
+Hoş geldiniz! Bu bot ile web sitesinden gelen bağışları takip edebilir ve reklam performansınızı analiz edebilirsiniz.
 
-<b>📊 Analiz Komutları:</b>
-/toplam - Tüm bağışların özeti
-/toplam DD.MM.YYYY - DD.MM.YYYY - Tarih aralığı
-/kaynaklar - Kaynak bazlı analiz (meta, google vb.)
-/kampanyalar - Kampanya performansı
-/ortamlar - Reklam ortamı analizi
-/gunluk - Bugünün özeti
-/son [N] - Son N bağış (varsayılan 5)
-/ortalama - Ortalama bağış analizi
-/export - Excel olarak dışa aktar
-/export DD.MM.YYYY - DD.MM.YYYY - Tarih aralığı
-/analiz [URL] - UTM linkinden bağış analizi
+━━━━━━━━━━━━━━━━━━━━━━
+📊 <b>ANALİZ KOMUTLARI</b>
+━━━━━━━━━━━━━━━━━━━━━━
 
-<b>🔗 UTM Komutları:</b>
-/build - Yeni UTM link oluştur
-/cancel - İşlemi iptal et
-/myid - Chat ID'nizi öğrenin
+/gunluk — Bugünün özeti
+/toplam — Tüm bağışların özeti
+/son [N] — Son N bağış (varsayılan 5)
 
-<b>UTM Parametreleri:</b>
-• utm_source - Trafik kaynağı
-• utm_medium - Pazarlama ortamı
-• utm_campaign - Kampanya adı
-• utm_content - Kreatif/içerik adı
-• utm_term - Reklam seti (opsiyonel)`
+━━━━━━━━━━━━━━━━━━━━━━
+📡 <b>KAYNAK ANALİZİ</b>
+━━━━━━━━━━━━━━━━━━━━━━
+
+/google — Google Ads analizi
+/meta — Meta (FB/IG) analizi
+/kaynaklar — Tüm kaynaklar
+/ortamlar — Reklam ortamları
+
+━━━━━━━━━━━━━━━━━━━━━━
+📦 <b>DETAYLI ANALİZ</b>
+━━━━━━━━━━━━━━━━━━━━━━
+
+/kalem [isim] — Bağış kalemi analizi
+/kampanyalar — Kampanya performansı
+/ortalama — Ortalama bağış analizi
+/analiz [URL] — UTM link analizi
+
+━━━━━━━━━━━━━━━━━━━━━━
+📁 <b>DIŞA AKTARMA</b>
+━━━━━━━━━━━━━━━━━━━━━━
+
+/export — Tüm verileri Excel'e aktar
+/export DD.MM.YYYY - DD.MM.YYYY
+
+━━━━━━━━━━━━━━━━━━━━━━
+🔗 <b>UTM OLUŞTURUCU</b>
+━━━━━━━━━━━━━━━━━━━━━━
+
+/build — Yeni UTM link oluştur
+/cancel — İşlemi iptal et
+
+━━━━━━━━━━━━━━━━━━━━━━
+⚙️ <b>DİĞER</b>
+━━━━━━━━━━━━━━━━━━━━━━
+
+/myid — Chat ID'nizi öğrenin
+/start — Bu mesajı göster
+
+━━━━━━━━━━━━━━━━━━━━━━`
 
 	msg := tgbotapi.NewMessage(chatID, welcomeText)
 	msg.ParseMode = "HTML"
