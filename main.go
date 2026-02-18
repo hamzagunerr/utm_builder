@@ -813,15 +813,14 @@ func handleSonCommand(bot *tgbotapi.BotAPI, chatID int64, args string) {
 func handleGunlukCommand(bot *tgbotapi.BotAPI, chatID int64) {
 	ctx := context.Background()
 
-	// Türkiye saati için timezone
-	turkeyLoc, _ := time.LoadLocation("Europe/Istanbul")
-	now := time.Now().In(turkeyLoc)
-	startOfDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, turkeyLoc)
+	// Türkiye saati için UTC+3 ekle (timezone dosyası olmayabilir)
+	now := time.Now().UTC().Add(3 * time.Hour)
+	startOfDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
 	endOfDay := startOfDay.Add(24 * time.Hour)
 
-	// UTC'ye çevir (veritabanı UTC'de)
-	startOfDayUTC := startOfDay.UTC()
-	endOfDayUTC := endOfDay.UTC()
+	// UTC olarak kullan (zaten UTC'de hesapladık)
+	startOfDayUTC := startOfDay.Add(-3 * time.Hour)
+	endOfDayUTC := endOfDay.Add(-3 * time.Hour)
 
 	// Genel istatistikler
 	var stats struct {
@@ -1695,4 +1694,3 @@ func replaceTurkishChars(s string) string {
 	}
 	return result.String()
 }
-
