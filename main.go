@@ -446,16 +446,13 @@ func handleMessage(bot *tgbotapi.BotAPI, message *tgbotapi.Message) {
 		return
 	}
 
-	// Aktif session varsa, kullanıcı girdisini işle
+	// Aktif session varsa, kullanıcı girdisini işle (session yoksa cevap verme)
 	sessionsMutex.RLock()
 	session, exists := sessions[userID]
 	sessionsMutex.RUnlock()
 
 	if exists {
 		handleUserInput(bot, chatID, userID, message.Text, session)
-	} else {
-		msg := tgbotapi.NewMessage(chatID, "UTM link oluşturmak için /build komutunu kullanın.")
-		bot.Send(msg)
 	}
 }
 
@@ -842,22 +839,26 @@ func handleGunlukCommand(bot *tgbotapi.BotAPI, chatID int64) {
 		return
 	}
 
-	// Kaynak bazlı dağılım
+	// Kaynak bazlı dağılım (traffic_channel ile birlikte)
 	var sources []struct {
 		UTMSource string  `bun:"utm_source"`
 		Total     float64 `bun:"total"`
 		Count     int     `bun:"count"`
 	}
-	db.NewSelect().
-		TableExpr("orders").
-		ColumnExpr("COALESCE(NULLIF(utm_source, ''), 'Doğrudan') as utm_source").
-		ColumnExpr("SUM(amount) as total").
-		ColumnExpr("COUNT(*) as count").
-		Where("event_time >= ?", startOfDayUTC).
-		Where("event_time < ?", endOfDayUTC).
-		GroupExpr("utm_source").
-		OrderExpr("total DESC").
-		Scan(ctx, &sources)
+	db.NewRaw(`
+		SELECT 
+			CASE 
+				WHEN utm_source IS NOT NULL AND utm_source != '' THEN utm_source
+				WHEN traffic_channel = 'google' THEN 'Google Ads'
+				ELSE 'Doğrudan'
+			END as utm_source,
+			SUM(amount) as total,
+			COUNT(*) as count
+		FROM orders
+		WHERE event_time >= ? AND event_time < ?
+		GROUP BY 1
+		ORDER BY total DESC
+	`, startOfDayUTC, endOfDayUTC).Scan(ctx, &sources)
 
 	// Türkçe gün adı
 	gunAdi := getTurkishDayName(now.Weekday())
