@@ -1945,7 +1945,7 @@ func handleSourceAnalysisCommand(bot *tgbotapi.BotAPI, chatID int64, source stri
 	}
 	db.NewRaw(fmt.Sprintf(`
 		SELECT COALESCE(SUM(amount), 0) as total, COUNT(*) as count
-		FROM orders WHERE %s AND event_time >= $1 AND event_time < $2
+		FROM orders WHERE %s AND event_time >= ? AND event_time < ?
 	`, sourceFilter), startOfDayUTC, endOfDayUTC).Scan(ctx, &todayTotal)
 
 	// 4. Bugün - Bağış kalemleri
@@ -1960,7 +1960,7 @@ func handleSourceAnalysisCommand(bot *tgbotapi.BotAPI, chatID int64, source stri
 			SUM((item->>'price')::numeric * (item->>'quantity')::numeric) as total,
 			SUM((item->>'quantity')::numeric)::int as count
 		FROM orders o, jsonb_array_elements(o.items) as item
-		WHERE %s AND o.event_time >= $1 AND o.event_time < $2
+		WHERE %s AND o.event_time >= ? AND o.event_time < ?
 		GROUP BY item->>'item_name'
 		ORDER BY total DESC
 	`, sourceFilter), startOfDayUTC, endOfDayUTC).Scan(ctx, &todayItems)
