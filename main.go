@@ -79,16 +79,21 @@ func getNotificationChatIDs() []int64 {
 type Order struct {
 	bun.BaseModel `bun:"table:orders,alias:o"`
 
-	ID          int64       `bun:"id,pk,autoincrement"`
-	OrderID     string      `bun:"order_id,notnull,unique"`
-	Amount      float64     `bun:"amount,notnull"`
-	Currency    string      `bun:"currency,notnull"`
-	Items       []OrderItem `bun:"items,type:jsonb"`
-	UTMSource   string      `bun:"utm_source"`
-	UTMMedium   string      `bun:"utm_medium"`
-	UTMCampaign string      `bun:"utm_campaign"`
-	EventTime   time.Time   `bun:"event_time,notnull"`
-	CreatedAt   time.Time   `bun:"created_at,nullzero,notnull,default:current_timestamp"`
+	ID             int64       `bun:"id,pk,autoincrement"`
+	OrderID        string      `bun:"order_id,notnull,unique"`
+	Amount         float64     `bun:"amount,notnull"`
+	Currency       string      `bun:"currency,notnull"`
+	Items          []OrderItem `bun:"items,type:jsonb"`
+	UTMSource      string      `bun:"utm_source"`
+	UTMMedium      string      `bun:"utm_medium"`
+	UTMCampaign    string      `bun:"utm_campaign"`
+	UTMContent     string      `bun:"utm_content"`
+	UTMTerm        string      `bun:"utm_term"`
+	GadSource      string      `bun:"gad_source"`
+	GadCampaignID  string      `bun:"gad_campaignid"`
+	TrafficChannel string      `bun:"traffic_channel"`
+	EventTime      time.Time   `bun:"event_time,notnull"`
+	CreatedAt      time.Time   `bun:"created_at,nullzero,notnull,default:current_timestamp"`
 }
 
 // OrderItem sipariş kalemi
@@ -101,14 +106,19 @@ type OrderItem struct {
 
 // ThrowDataRequest API isteği için struct
 type ThrowDataRequest struct {
-	OrderID     string      `json:"order_id"`
-	Amount      float64     `json:"amount"`
-	Currency    string      `json:"currency"`
-	Items       []OrderItem `json:"items"`
-	UTMSource   string      `json:"utm_source"`
-	UTMMedium   string      `json:"utm_medium"`
-	UTMCampaign string      `json:"utm_campaign"`
-	EventTime   time.Time   `json:"event_time"`
+	OrderID        string      `json:"order_id"`
+	Amount         float64     `json:"amount"`
+	Currency       string      `json:"currency"`
+	Items          []OrderItem `json:"items"`
+	UTMSource      string      `json:"utm_source"`
+	UTMMedium      string      `json:"utm_medium"`
+	UTMCampaign    string      `json:"utm_campaign"`
+	UTMContent     string      `json:"utm_content"`
+	UTMTerm        string      `json:"utm_term"`
+	GadSource      string      `json:"gad_source"`
+	GadCampaignID  string      `json:"gad_campaignid"`
+	TrafficChannel string      `json:"traffic_channel"`
+	EventTime      time.Time   `json:"event_time"`
 }
 
 // initDatabase veritabanı bağlantısını başlatır
@@ -132,6 +142,21 @@ func initDatabase() error {
 	_, err := db.NewCreateTable().Model((*Order)(nil)).IfNotExists().Exec(ctx)
 	if err != nil {
 		return fmt.Errorf("tablo oluşturulamadı: %w", err)
+	}
+
+	// Yeni sütunları ekle (migration)
+	migrations := []string{
+		"ALTER TABLE orders ADD COLUMN IF NOT EXISTS utm_content VARCHAR(255)",
+		"ALTER TABLE orders ADD COLUMN IF NOT EXISTS utm_term VARCHAR(255)",
+		"ALTER TABLE orders ADD COLUMN IF NOT EXISTS gad_source VARCHAR(255)",
+		"ALTER TABLE orders ADD COLUMN IF NOT EXISTS gad_campaignid VARCHAR(255)",
+		"ALTER TABLE orders ADD COLUMN IF NOT EXISTS traffic_channel VARCHAR(255)",
+	}
+
+	for _, migration := range migrations {
+		if _, err := db.ExecContext(ctx, migration); err != nil {
+			log.Printf("Migration uyarı (muhtemelen sütun zaten var): %v", err)
+		}
 	}
 
 	log.Println("Veritabanı tabloları hazır")
@@ -204,14 +229,19 @@ func handleThrowData(c *fiber.Ctx) error {
 
 	// Veritabanına kaydet
 	order := &Order{
-		OrderID:     req.OrderID,
-		Amount:      req.Amount,
-		Currency:    req.Currency,
-		Items:       req.Items,
-		UTMSource:   req.UTMSource,
-		UTMMedium:   req.UTMMedium,
-		UTMCampaign: req.UTMCampaign,
-		EventTime:   req.EventTime,
+		OrderID:        req.OrderID,
+		Amount:         req.Amount,
+		Currency:       req.Currency,
+		Items:          req.Items,
+		UTMSource:      req.UTMSource,
+		UTMMedium:      req.UTMMedium,
+		UTMCampaign:    req.UTMCampaign,
+		UTMContent:     req.UTMContent,
+		UTMTerm:        req.UTMTerm,
+		GadSource:      req.GadSource,
+		GadCampaignID:  req.GadCampaignID,
+		TrafficChannel: req.TrafficChannel,
+		EventTime:      req.EventTime,
 	}
 
 	ctx := context.Background()
@@ -248,10 +278,13 @@ func handleThrowData(c *fiber.Ctx) error {
 func formatOrderMessage(req *ThrowDataRequest) string {
 	var sb strings.Builder
 
+	// Türkiye saati için UTC+3 ekle
+	turkeyTime := req.EventTime.Add(3 * time.Hour)
+
 	sb.WriteString("🛒 <b>Yeni Bağış Bildirimi</b>\n\n")
 	sb.WriteString(fmt.Sprintf("📋 <b>Sipariş ID:</b> <code>%s</code>\n", req.OrderID))
 	sb.WriteString(fmt.Sprintf("💰 <b>Tutar:</b> %.2f %s\n", req.Amount, req.Currency))
-	sb.WriteString(fmt.Sprintf("📅 <b>Tarih:</b> %s\n\n", req.EventTime.Format("02.01.2006 15:04:05")))
+	sb.WriteString(fmt.Sprintf("📅 <b>Tarih:</b> %s\n\n", turkeyTime.Format("02.01.2006 15:04:05")))
 
 	if len(req.Items) > 0 {
 		sb.WriteString("📦 <b>Bağış Kalemleri:</b>\n")
@@ -261,15 +294,44 @@ func formatOrderMessage(req *ThrowDataRequest) string {
 		sb.WriteString("\n")
 	}
 
-	sb.WriteString("📊 <b>UTM Bilgileri:</b>\n")
-	if req.UTMSource != "" {
-		sb.WriteString(fmt.Sprintf("  • Kaynak: %s\n", req.UTMSource))
+	// UTM Bilgileri
+	hasUTM := req.UTMSource != "" || req.UTMMedium != "" || req.UTMCampaign != "" || req.UTMContent != "" || req.UTMTerm != ""
+	if hasUTM {
+		sb.WriteString("📊 <b>UTM Bilgileri:</b>\n")
+		if req.UTMSource != "" {
+			sb.WriteString(fmt.Sprintf("  • Kaynak: %s\n", req.UTMSource))
+		}
+		if req.UTMMedium != "" {
+			sb.WriteString(fmt.Sprintf("  • Ortam: %s\n", req.UTMMedium))
+		}
+		if req.UTMCampaign != "" {
+			sb.WriteString(fmt.Sprintf("  • Kampanya: %s\n", req.UTMCampaign))
+		}
+		if req.UTMContent != "" {
+			sb.WriteString(fmt.Sprintf("  • İçerik: %s\n", req.UTMContent))
+		}
+		if req.UTMTerm != "" {
+			sb.WriteString(fmt.Sprintf("  • Terim: %s\n", req.UTMTerm))
+		}
+		sb.WriteString("\n")
 	}
-	if req.UTMMedium != "" {
-		sb.WriteString(fmt.Sprintf("  • Ortam: %s\n", req.UTMMedium))
+
+	// Google Ads Bilgileri
+	hasGoogle := req.GadSource != "" || req.GadCampaignID != ""
+	if hasGoogle {
+		sb.WriteString("🔍 <b>Google Ads Bilgileri:</b>\n")
+		if req.GadSource != "" {
+			sb.WriteString(fmt.Sprintf("  • gad_source: %s\n", req.GadSource))
+		}
+		if req.GadCampaignID != "" {
+			sb.WriteString(fmt.Sprintf("  • gad_campaignid: %s\n", req.GadCampaignID))
+		}
+		sb.WriteString("\n")
 	}
-	if req.UTMCampaign != "" {
-		sb.WriteString(fmt.Sprintf("  • Kampanya: %s\n", req.UTMCampaign))
+
+	// Trafik Kanalı
+	if req.TrafficChannel != "" {
+		sb.WriteString(fmt.Sprintf("📡 <b>Trafik Kanalı:</b> %s\n", req.TrafficChannel))
 	}
 
 	return sb.String()
@@ -375,6 +437,8 @@ func handleMessage(bot *tgbotapi.BotAPI, message *tgbotapi.Message) {
 			handleOrtalamaCommand(bot, chatID, message.CommandArguments())
 		case "export":
 			handleExportCommand(bot, chatID, message.CommandArguments())
+		case "analiz":
+			handleAnalizCommand(bot, chatID, message.CommandArguments())
 		default:
 			msg := tgbotapi.NewMessage(chatID, "Bilinmeyen komut. /start komutu ile kullanılabilir komutları görebilirsiniz.")
 			bot.Send(msg)
@@ -730,6 +794,12 @@ func handleSonCommand(bot *tgbotapi.BotAPI, chatID int64, args string) {
 			if o.UTMCampaign != "" {
 				sb.WriteString(fmt.Sprintf("   🎯 %s\n", o.UTMCampaign))
 			}
+			if o.GadSource != "" || o.GadCampaignID != "" {
+				sb.WriteString(fmt.Sprintf("   🔍 Google: %s / %s\n", o.GadSource, o.GadCampaignID))
+			}
+			if o.TrafficChannel != "" {
+				sb.WriteString(fmt.Sprintf("   📡 Kanal: %s\n", o.TrafficChannel))
+			}
 			sb.WriteString("\n")
 		}
 	}
@@ -944,7 +1014,7 @@ func handleExportCommand(bot *tgbotapi.BotAPI, chatID int64, args string) {
 	})
 
 	// Başlıklar
-	headers := []string{"Sipariş ID", "Tutar", "Para Birimi", "Bağış Kalemleri", "UTM Source", "UTM Medium", "UTM Campaign", "Tarih", "Kayıt Tarihi"}
+	headers := []string{"Sipariş ID", "Tutar", "Para Birimi", "Bağış Kalemleri", "UTM Source", "UTM Medium", "UTM Campaign", "UTM Content", "UTM Term", "GAD Source", "GAD Campaign ID", "Traffic Channel", "Tarih", "Kayıt Tarihi"}
 	for i, h := range headers {
 		cell, _ := excelize.CoordinatesToCellName(i+1, 1)
 		f.SetCellValue(sheetName, cell, h)
@@ -993,11 +1063,16 @@ func handleExportCommand(bot *tgbotapi.BotAPI, chatID int64, args string) {
 		f.SetCellValue(sheetName, fmt.Sprintf("E%d", row), o.UTMSource)
 		f.SetCellValue(sheetName, fmt.Sprintf("F%d", row), o.UTMMedium)
 		f.SetCellValue(sheetName, fmt.Sprintf("G%d", row), o.UTMCampaign)
-		f.SetCellValue(sheetName, fmt.Sprintf("H%d", row), o.EventTime.Format("02.01.2006 15:04:05"))
-		f.SetCellValue(sheetName, fmt.Sprintf("I%d", row), o.CreatedAt.Format("02.01.2006 15:04:05"))
+		f.SetCellValue(sheetName, fmt.Sprintf("H%d", row), o.UTMContent)
+		f.SetCellValue(sheetName, fmt.Sprintf("I%d", row), o.UTMTerm)
+		f.SetCellValue(sheetName, fmt.Sprintf("J%d", row), o.GadSource)
+		f.SetCellValue(sheetName, fmt.Sprintf("K%d", row), o.GadCampaignID)
+		f.SetCellValue(sheetName, fmt.Sprintf("L%d", row), o.TrafficChannel)
+		f.SetCellValue(sheetName, fmt.Sprintf("M%d", row), o.EventTime.Format("02.01.2006 15:04:05"))
+		f.SetCellValue(sheetName, fmt.Sprintf("N%d", row), o.CreatedAt.Format("02.01.2006 15:04:05"))
 
 		// Stiller uygula
-		for col := 1; col <= 9; col++ {
+		for col := 1; col <= 14; col++ {
 			cell, _ := excelize.CoordinatesToCellName(col, row)
 			if col == 2 {
 				f.SetCellStyle(sheetName, cell, cell, amountStyle)
@@ -1015,8 +1090,13 @@ func handleExportCommand(bot *tgbotapi.BotAPI, chatID int64, args string) {
 	f.SetColWidth(sheetName, "E", "E", 12)
 	f.SetColWidth(sheetName, "F", "F", 15)
 	f.SetColWidth(sheetName, "G", "G", 25)
-	f.SetColWidth(sheetName, "H", "H", 18)
-	f.SetColWidth(sheetName, "I", "I", 18)
+	f.SetColWidth(sheetName, "H", "H", 20)
+	f.SetColWidth(sheetName, "I", "I", 15)
+	f.SetColWidth(sheetName, "J", "J", 12)
+	f.SetColWidth(sheetName, "K", "K", 18)
+	f.SetColWidth(sheetName, "L", "L", 15)
+	f.SetColWidth(sheetName, "M", "M", 18)
+	f.SetColWidth(sheetName, "N", "N", 18)
 
 	// Özet sayfası ekle
 	summarySheet := "Özet"
@@ -1084,6 +1164,125 @@ func handleExportCommand(bot *tgbotapi.BotAPI, chatID int64, args string) {
 
 	// Geçici dosyayı sil
 	os.Remove(filepath)
+}
+
+// handleAnalizCommand /analiz komutunu işler - UTM linkinden bağış analizi
+func handleAnalizCommand(bot *tgbotapi.BotAPI, chatID int64, args string) {
+	args = strings.TrimSpace(args)
+
+	if args == "" {
+		msg := tgbotapi.NewMessage(chatID, `📊 <b>Link Analizi</b>
+
+UTM parametreli bir link gönderin, o linke ait tüm bağışları listeleyelim.
+
+<b>Kullanım:</b>
+<code>/analiz https://hayratyardim.org/bagis/su-kuyusu/?utm_source=google&amp;utm_campaign=test</code>
+
+Link içindeki UTM parametreleri (utm_source, utm_medium, utm_campaign) kullanılarak eşleşen bağışlar bulunur.`)
+		msg.ParseMode = "HTML"
+		bot.Send(msg)
+		return
+	}
+
+	// URL'yi parse et
+	parsedURL, err := url.Parse(args)
+	if err != nil {
+		msg := tgbotapi.NewMessage(chatID, "❌ Geçersiz URL formatı.")
+		bot.Send(msg)
+		return
+	}
+
+	// UTM parametrelerini çıkar
+	query := parsedURL.Query()
+	utmSource := query.Get("utm_source")
+	utmMedium := query.Get("utm_medium")
+	utmCampaign := query.Get("utm_campaign")
+
+	if utmSource == "" && utmMedium == "" && utmCampaign == "" {
+		msg := tgbotapi.NewMessage(chatID, "⚠️ Bu linkte UTM parametresi bulunamadı.\n\nÖrnek: ?utm_source=google&utm_campaign=test")
+		bot.Send(msg)
+		return
+	}
+
+	ctx := context.Background()
+
+	// Sorguyu oluştur
+	var orders []Order
+	queryBuilder := db.NewSelect().Model(&orders)
+
+	// Filtreleri ekle (sadece dolu olanlar)
+	if utmSource != "" {
+		queryBuilder = queryBuilder.Where("utm_source = ?", utmSource)
+	}
+	if utmMedium != "" {
+		queryBuilder = queryBuilder.Where("utm_medium = ?", utmMedium)
+	}
+	if utmCampaign != "" {
+		queryBuilder = queryBuilder.Where("utm_campaign = ?", utmCampaign)
+	}
+
+	queryBuilder = queryBuilder.OrderExpr("event_time DESC").Limit(50)
+
+	err = queryBuilder.Scan(ctx)
+	if err != nil {
+		log.Printf("Analiz sorgu hatası: %v", err)
+		msg := tgbotapi.NewMessage(chatID, "❌ Veritabanı sorgu hatası oluştu.")
+		bot.Send(msg)
+		return
+	}
+
+	// İstatistikleri hesapla
+	var totalAmount float64
+	for _, o := range orders {
+		totalAmount += o.Amount
+	}
+
+	// Mesajı oluştur
+	var sb strings.Builder
+	sb.WriteString("🔍 <b>Link Analizi Sonuçları</b>\n\n")
+
+	sb.WriteString("<b>🎯 Arama Kriterleri:</b>\n")
+	if utmSource != "" {
+		sb.WriteString(fmt.Sprintf("  • utm_source: <code>%s</code>\n", utmSource))
+	}
+	if utmMedium != "" {
+		sb.WriteString(fmt.Sprintf("  • utm_medium: <code>%s</code>\n", utmMedium))
+	}
+	if utmCampaign != "" {
+		sb.WriteString(fmt.Sprintf("  • utm_campaign: <code>%s</code>\n", utmCampaign))
+	}
+	sb.WriteString("\n")
+
+	if len(orders) == 0 {
+		sb.WriteString("ℹ️ Bu kriterlere uyan bağış bulunamadı.")
+	} else {
+		sb.WriteString(fmt.Sprintf("📈 <b>Özet:</b>\n"))
+		sb.WriteString(fmt.Sprintf("  • Toplam Bağış: %d\n", len(orders)))
+		sb.WriteString(fmt.Sprintf("  • Toplam Tutar: %.2f TRY\n", totalAmount))
+		if len(orders) > 0 {
+			sb.WriteString(fmt.Sprintf("  • Ortalama: %.2f TRY\n", totalAmount/float64(len(orders))))
+		}
+		sb.WriteString("\n")
+
+		// Son 10 bağışı listele
+		limit := 10
+		if len(orders) < limit {
+			limit = len(orders)
+		}
+		sb.WriteString(fmt.Sprintf("🕐 <b>Son %d Bağış:</b>\n", limit))
+		for i := 0; i < limit; i++ {
+			o := orders[i]
+			sb.WriteString(fmt.Sprintf("%d. %.2f %s - %s\n", i+1, o.Amount, o.Currency, o.EventTime.Format("02.01.2006 15:04")))
+		}
+
+		if len(orders) > 10 {
+			sb.WriteString(fmt.Sprintf("\n<i>...ve %d bağış daha</i>", len(orders)-10))
+		}
+	}
+
+	msg := tgbotapi.NewMessage(chatID, sb.String())
+	msg.ParseMode = "HTML"
+	bot.Send(msg)
 }
 
 // parseDateRange tarih aralığını parse eder
@@ -1168,6 +1367,7 @@ Bu bot, pazarlama kampanyalarınız için UTM parametreli linkler oluşturmanız
 /ortalama - Ortalama bağış analizi
 /export - Excel olarak dışa aktar
 /export DD.MM.YYYY - DD.MM.YYYY - Tarih aralığı
+/analiz [URL] - UTM linkinden bağış analizi
 
 <b>🔗 UTM Komutları:</b>
 /build - Yeni UTM link oluştur
@@ -1191,6 +1391,7 @@ func startBuildProcess(bot *tgbotapi.BotAPI, chatID int64, userID int64) {
 	// Yeni session oluştur
 	sessionsMutex.Lock()
 	sessions[userID] = &UserSession{Step: 1}
+	log.Printf("Yeni session oluşturuldu: userID=%d, toplam session=%d", userID, len(sessions))
 	sessionsMutex.Unlock()
 
 	msg := tgbotapi.NewMessage(chatID, "📝 *Adım 1/6: Kaynak URL*\n\nLütfen UTM parametreleri eklemek istediğiniz URL'yi girin.\n\nÖrnek: `https://hayratyardim.org/bagis/genel-su-kuyusu/`")
@@ -1249,18 +1450,29 @@ func handleCallback(bot *tgbotapi.BotAPI, callback *tgbotapi.CallbackQuery) {
 	chatID := callback.Message.Chat.ID
 	data := callback.Data
 
+	log.Printf("Callback alındı: userID=%d, chatID=%d, data=%s", userID, chatID, data)
+
 	// Callback'i yanıtla (loading göstergesini kaldır)
 	bot.Request(tgbotapi.NewCallback(callback.ID, ""))
 
 	sessionsMutex.RLock()
 	session, exists := sessions[userID]
+	// Debug: Mevcut session'ları logla
+	sessionKeys := make([]int64, 0, len(sessions))
+	for k := range sessions {
+		sessionKeys = append(sessionKeys, k)
+	}
+	log.Printf("Mevcut session'lar: %v, aranan userID: %d, bulundu: %v", sessionKeys, userID, exists)
 	sessionsMutex.RUnlock()
 
 	if !exists {
+		log.Printf("UYARI: Session bulunamadı! userID=%d", userID)
 		msg := tgbotapi.NewMessage(chatID, "Oturum bulunamadı. Lütfen /build ile yeniden başlayın.")
 		bot.Send(msg)
 		return
 	}
+
+	log.Printf("Session bulundu: userID=%d, step=%d", userID, session.Step)
 
 	switch session.Step {
 	case 2: // UTM Source seçimi
@@ -1367,30 +1579,31 @@ func sendFinalURL(bot *tgbotapi.BotAPI, chatID int64, userID int64, session *Use
 	parsedURL.RawQuery = query.Encode()
 	finalURL := parsedURL.String()
 
-	// Sonucu gönder
-	resultText := fmt.Sprintf(`✅ *UTM Link Başarıyla Oluşturuldu!*
-
-📊 *Parametreler:*
-• Kaynak URL: %s
-• utm_source: %s
-• utm_medium: %s
-• utm_campaign: %s
-• utm_content: %s`,
-		session.SourceURL,
-		session.UTMSource,
-		session.UTMMedium,
-		session.Campaign,
-		session.Content)
+	// Sonucu gönder (HTML formatında - Markdown'daki _ sorunu için)
+	var sb strings.Builder
+	sb.WriteString("✅ <b>UTM Link Başarıyla Oluşturuldu!</b>\n\n")
+	sb.WriteString("📊 <b>Parametreler:</b>\n")
+	sb.WriteString(fmt.Sprintf("• Kaynak URL: %s\n", session.SourceURL))
+	sb.WriteString(fmt.Sprintf("• utm_source: %s\n", session.UTMSource))
+	sb.WriteString(fmt.Sprintf("• utm_medium: %s\n", session.UTMMedium))
+	sb.WriteString(fmt.Sprintf("• utm_campaign: %s\n", session.Campaign))
+	sb.WriteString(fmt.Sprintf("• utm_content: %s\n", session.Content))
 
 	if session.Term != "" {
-		resultText += fmt.Sprintf("\n• utm_term: %s", session.Term)
+		sb.WriteString(fmt.Sprintf("• utm_term: %s\n", session.Term))
 	}
 
-	resultText += fmt.Sprintf("\n\n🔗 *Son URL:*\n`%s`\n\nYeni bir link oluşturmak için /build komutunu kullanabilirsiniz.", finalURL)
+	sb.WriteString(fmt.Sprintf("\n🔗 <b>Son URL:</b>\n<code>%s</code>\n\n", finalURL))
+	sb.WriteString("Yeni bir link oluşturmak için /build komutunu kullanabilirsiniz.")
 
-	msg := tgbotapi.NewMessage(chatID, resultText)
-	msg.ParseMode = "Markdown"
-	bot.Send(msg)
+	msg := tgbotapi.NewMessage(chatID, sb.String())
+	msg.ParseMode = "HTML"
+	if _, err := bot.Send(msg); err != nil {
+		log.Printf("Final URL mesajı gönderilemedi: %v", err)
+		// Hata olursa düz metin olarak gönder
+		plainMsg := tgbotapi.NewMessage(chatID, fmt.Sprintf("✅ UTM Link Oluşturuldu!\n\n%s", finalURL))
+		bot.Send(plainMsg)
+	}
 
 	// Session'ı temizle
 	sessionsMutex.Lock()

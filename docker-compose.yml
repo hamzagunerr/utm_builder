@@ -16,7 +16,6 @@ services:
         condition: service_healthy
     networks:
       - app-network
-      - npm_default
 
   postgres:
     image: postgres:16-alpine
@@ -42,5 +41,3 @@ volumes:
 networks:
   app-network:
     driver: bridge
-  npm_default:
-    external: true
