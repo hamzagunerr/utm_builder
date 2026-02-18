@@ -441,6 +441,10 @@ func handleMessage(bot *tgbotapi.BotAPI, message *tgbotapi.Message) {
 			handleAnalizCommand(bot, chatID, message.CommandArguments())
 		case "kalem":
 			handleKalemCommand(bot, chatID, message.CommandArguments())
+		case "google":
+			handleSourceAnalysisCommand(bot, chatID, "google")
+		case "meta":
+			handleSourceAnalysisCommand(bot, chatID, "meta")
 		default:
 			msg := tgbotapi.NewMessage(chatID, "Bilinmeyen komut. /start komutu ile kullanılabilir komutları görebilirsiniz.")
 			bot.Send(msg)
@@ -1865,6 +1869,147 @@ func handleKalemCommand(bot *tgbotapi.BotAPI, chatID int64, args string) {
 			for _, s := range todaySources {
 				percentage := (s.Total / todayStats.Total) * 100
 				sb.WriteString(fmt.Sprintf("   • %s: %.2f TRY (%d) %%%.1f\n", s.Source, s.Total, s.Count, percentage))
+			}
+		}
+	}
+
+	sb.WriteString("\n━━━━━━━━━━━━━━━━━━━━━━\n")
+
+	msg := tgbotapi.NewMessage(chatID, sb.String())
+	msg.ParseMode = "HTML"
+	bot.Send(msg)
+}
+
+// handleSourceAnalysisCommand /google ve /meta komutlarını işler - Kaynak bazlı detaylı analiz
+func handleSourceAnalysisCommand(bot *tgbotapi.BotAPI, chatID int64, source string) {
+	ctx := context.Background()
+
+	// Türkiye saati için UTC+3
+	now := time.Now().UTC().Add(3 * time.Hour)
+	startOfDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	endOfDay := startOfDay.Add(24 * time.Hour)
+	startOfDayUTC := startOfDay.Add(-3 * time.Hour)
+	endOfDayUTC := endOfDay.Add(-3 * time.Hour)
+
+	// Kaynak filtresi oluştur
+	var sourceFilter string
+	var sourceTitle string
+	var sourceEmoji string
+
+	switch source {
+	case "google":
+		sourceFilter = "(utm_source = 'google' OR traffic_channel = 'google')"
+		sourceTitle = "GOOGLE ADS"
+		sourceEmoji = "🔍"
+	case "meta":
+		sourceFilter = "utm_source = 'meta'"
+		sourceTitle = "META (Facebook/Instagram)"
+		sourceEmoji = "📱"
+	default:
+		sourceFilter = fmt.Sprintf("utm_source = '%s'", source)
+		sourceTitle = strings.ToUpper(source)
+		sourceEmoji = "📊"
+	}
+
+	// 1. Tüm zamanlar - Toplam
+	var allTimeTotal struct {
+		Total float64 `bun:"total"`
+		Count int     `bun:"count"`
+	}
+	db.NewRaw(fmt.Sprintf(`
+		SELECT COALESCE(SUM(amount), 0) as total, COUNT(*) as count
+		FROM orders WHERE %s
+	`, sourceFilter)).Scan(ctx, &allTimeTotal)
+
+	// 2. Tüm zamanlar - Bağış kalemleri
+	var allTimeItems []struct {
+		ItemName string  `bun:"item_name"`
+		Total    float64 `bun:"total"`
+		Count    int     `bun:"count"`
+	}
+	db.NewRaw(fmt.Sprintf(`
+		SELECT 
+			item->>'item_name' as item_name,
+			SUM((item->>'price')::numeric * (item->>'quantity')::numeric) as total,
+			SUM((item->>'quantity')::numeric)::int as count
+		FROM orders o, jsonb_array_elements(o.items) as item
+		WHERE %s
+		GROUP BY item->>'item_name'
+		ORDER BY total DESC
+	`, sourceFilter)).Scan(ctx, &allTimeItems)
+
+	// 3. Bugün - Toplam
+	var todayTotal struct {
+		Total float64 `bun:"total"`
+		Count int     `bun:"count"`
+	}
+	db.NewRaw(fmt.Sprintf(`
+		SELECT COALESCE(SUM(amount), 0) as total, COUNT(*) as count
+		FROM orders WHERE %s AND event_time >= $1 AND event_time < $2
+	`, sourceFilter), startOfDayUTC, endOfDayUTC).Scan(ctx, &todayTotal)
+
+	// 4. Bugün - Bağış kalemleri
+	var todayItems []struct {
+		ItemName string  `bun:"item_name"`
+		Total    float64 `bun:"total"`
+		Count    int     `bun:"count"`
+	}
+	db.NewRaw(fmt.Sprintf(`
+		SELECT 
+			item->>'item_name' as item_name,
+			SUM((item->>'price')::numeric * (item->>'quantity')::numeric) as total,
+			SUM((item->>'quantity')::numeric)::int as count
+		FROM orders o, jsonb_array_elements(o.items) as item
+		WHERE %s AND o.event_time >= $1 AND o.event_time < $2
+		GROUP BY item->>'item_name'
+		ORDER BY total DESC
+	`, sourceFilter), startOfDayUTC, endOfDayUTC).Scan(ctx, &todayItems)
+
+	// Raporu oluştur
+	gunAdi := getTurkishDayName(now.Weekday())
+
+	var sb strings.Builder
+	sb.WriteString("━━━━━━━━━━━━━━━━━━━━━━\n")
+	sb.WriteString(fmt.Sprintf("%s <b>%s</b>\n", sourceEmoji, sourceTitle))
+	sb.WriteString("━━━━━━━━━━━━━━━━━━━━━━\n\n")
+
+	// Tüm zamanlar
+	sb.WriteString("📊 <b>TÜM ZAMANLAR</b>\n")
+	sb.WriteString("━━━━━━━━━━━━━━━━━━━━━━\n\n")
+
+	if allTimeTotal.Count == 0 {
+		sb.WriteString("   ℹ️ Bu kaynaktan bağış bulunmuyor.\n\n")
+	} else {
+		sb.WriteString(fmt.Sprintf("   💵 Toplam Gelir  : <b>%.2f TRY</b>\n", allTimeTotal.Total))
+		sb.WriteString(fmt.Sprintf("   🛒 Bağış Sayısı  : <b>%d</b>\n", allTimeTotal.Count))
+		sb.WriteString(fmt.Sprintf("   📊 Ortalama      : <b>%.2f TRY</b>\n\n", allTimeTotal.Total/float64(allTimeTotal.Count)))
+
+		if len(allTimeItems) > 0 {
+			sb.WriteString("   <b>📦 Bağış Kalemleri:</b>\n")
+			for _, item := range allTimeItems {
+				sb.WriteString(fmt.Sprintf("   • %s\n", item.ItemName))
+				sb.WriteString(fmt.Sprintf("     └ %.2f TRY | %d adet\n", item.Total, item.Count))
+			}
+		}
+	}
+	sb.WriteString("\n")
+
+	// Bugün
+	sb.WriteString(fmt.Sprintf("☀️ <b>BUGÜN</b> (%s, %s)\n", now.Format("02.01.2006"), gunAdi))
+	sb.WriteString("━━━━━━━━━━━━━━━━━━━━━━\n\n")
+
+	if todayTotal.Count == 0 {
+		sb.WriteString("   ℹ️ Bugün bu kaynaktan bağış yok.\n")
+	} else {
+		sb.WriteString(fmt.Sprintf("   💵 Toplam Gelir  : <b>%.2f TRY</b>\n", todayTotal.Total))
+		sb.WriteString(fmt.Sprintf("   🛒 Bağış Sayısı  : <b>%d</b>\n", todayTotal.Count))
+		sb.WriteString(fmt.Sprintf("   📊 Ortalama      : <b>%.2f TRY</b>\n\n", todayTotal.Total/float64(todayTotal.Count)))
+
+		if len(todayItems) > 0 {
+			sb.WriteString("   <b>📦 Bağış Kalemleri:</b>\n")
+			for _, item := range todayItems {
+				sb.WriteString(fmt.Sprintf("   • %s\n", item.ItemName))
+				sb.WriteString(fmt.Sprintf("     └ %.2f TRY | %d adet\n", item.Total, item.Count))
 			}
 		}
 	}
