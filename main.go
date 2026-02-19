@@ -44,13 +44,8 @@ func getBotToken() string {
 }
 
 // getNotificationChatIDs bildirim gönderilecek chat ID'lerini alır (virgülle ayrılmış)
-// Örnek: NOTIFICATION_CHAT_IDS=1026146458,-1001234567890
 func getNotificationChatIDs() []int64 {
 	chatIDsStr := os.Getenv("NOTIFICATION_CHAT_IDS")
-	// Eski format desteği (tek ID)
-	if chatIDsStr == "" {
-		chatIDsStr = os.Getenv("NOTIFICATION_CHAT_ID")
-	}
 	if chatIDsStr == "" {
 		log.Println("UYARI: NOTIFICATION_CHAT_IDS ayarlanmamış, bildirimler gönderilemeyecek")
 		return nil
@@ -75,7 +70,6 @@ func getNotificationChatIDs() []int64 {
 	return chatIDs
 }
 
-// Order veritabanı modeli
 type Order struct {
 	bun.BaseModel `bun:"table:orders,alias:o"`
 
@@ -96,7 +90,6 @@ type Order struct {
 	CreatedAt      time.Time   `bun:"created_at,nullzero,notnull,default:current_timestamp"`
 }
 
-// OrderItem sipariş kalemi
 type OrderItem struct {
 	ItemID   string  `json:"item_id"`
 	ItemName string  `json:"item_name"`
@@ -104,7 +97,6 @@ type OrderItem struct {
 	Price    float64 `json:"price"`
 }
 
-// ThrowDataRequest API isteği için struct
 type ThrowDataRequest struct {
 	OrderID        string      `json:"order_id"`
 	Amount         float64     `json:"amount"`
@@ -121,8 +113,8 @@ type ThrowDataRequest struct {
 	EventTime      time.Time   `json:"event_time"`
 }
 
-// initDatabase veritabanı bağlantısını başlatır
 func initDatabase() error {
+	//todo: hardcoded olmaz
 	dsn := getEnv("DATABASE_URL", "postgres://postgres:postgres@localhost:5432/utm_builder?sslmode=disable")
 
 	sqldb := sql.OpenDB(pgdriver.NewConnector(pgdriver.WithDSN(dsn)))
@@ -445,6 +437,18 @@ func handleMessage(bot *tgbotapi.BotAPI, message *tgbotapi.Message) {
 			handleSourceAnalysisCommand(bot, chatID, "google")
 		case "meta":
 			handleSourceAnalysisCommand(bot, chatID, "meta")
+		case "bugun":
+			handleBugunCommand(bot, chatID)
+		case "dun":
+			handleDunCommand(bot, chatID)
+		case "sms-bugun":
+			handleSMSBugunCommand(bot, chatID)
+		case "mail-bugun":
+			handleMailBugunCommand(bot, chatID)
+		case "sms":
+			handleSMSCommand(bot, chatID, message.CommandArguments())
+		case "mail":
+			handleMailCommand(bot, chatID, message.CommandArguments())
 		default:
 			msg := tgbotapi.NewMessage(chatID, "Bilinmeyen komut. /start komutu ile kullanılabilir komutları görebilirsiniz.")
 			bot.Send(msg)
@@ -1403,11 +1407,12 @@ func sendWelcomeMessage(bot *tgbotapi.BotAPI, chatID int64) {
 Hoş geldiniz! Bu bot ile web sitesinden gelen bağışları takip edebilir ve reklam performansınızı analiz edebilirsiniz.
 
 ━━━━━━━━━━━━━━━━━━━━━━
-📊 <b>ANALİZ KOMUTLARI</b>
+📊 <b>GÜNLÜK RAPORLAR</b>
 ━━━━━━━━━━━━━━━━━━━━━━
 
+/bugun — Bugünün bağışları (kalem + toplam)
+/dun — Dünün bağışları
 /gunluk — Bugünün özeti
-/toplam — Tüm bağışların özeti
 /son [N] — Son N bağış (varsayılan 5)
 
 ━━━━━━━━━━━━━━━━━━━━━━
@@ -1420,6 +1425,15 @@ Hoş geldiniz! Bu bot ile web sitesinden gelen bağışları takip edebilir ve r
 /ortamlar — Reklam ortamları
 
 ━━━━━━━━━━━━━━━━━━━━━━
+💬 <b>SMS & E-POSTA</b>
+━━━━━━━━━━━━━━━━━━━━━━
+
+/sms-bugun — Bugünkü SMS bağışları
+/mail-bugun — Bugünkü e-posta bağışları
+/sms DD.MM.YYYY — Belirli tarih SMS
+/mail DD.MM.YYYY — Belirli tarih e-posta
+
+━━━━━━━━━━━━━━━━━━━━━━
 📦 <b>DETAYLI ANALİZ</b>
 ━━━━━━━━━━━━━━━━━━━━━━
 
@@ -1427,6 +1441,7 @@ Hoş geldiniz! Bu bot ile web sitesinden gelen bağışları takip edebilir ve r
 /kampanyalar — Kampanya performansı
 /ortalama — Ortalama bağış analizi
 /analiz [URL] — UTM link analizi
+/toplam — Tüm bağışların özeti
 
 ━━━━━━━━━━━━━━━━━━━━━━
 📁 <b>DIŞA AKTARMA</b>
@@ -2042,6 +2057,333 @@ func handleSourceAnalysisCommand(bot *tgbotapi.BotAPI, chatID int64, source stri
 	}
 
 	sb.WriteString("\n━━━━━━━━━━━━━━━━━━━━━━\n")
+
+	msg := tgbotapi.NewMessage(chatID, sb.String())
+	msg.ParseMode = "HTML"
+	bot.Send(msg)
+}
+
+// handleBugunCommand /bugun komutunu işler - Bugünün bağışları (kalem kalem + toplam)
+func handleBugunCommand(bot *tgbotapi.BotAPI, chatID int64) {
+	handleDayReport(bot, chatID, 0)
+}
+
+// handleDunCommand /dun komutunu işler - Dünün bağışları
+func handleDunCommand(bot *tgbotapi.BotAPI, chatID int64) {
+	handleDayReport(bot, chatID, -1)
+}
+
+// handleDayReport belirli bir günün raporunu oluşturur (dayOffset: 0=bugün, -1=dün)
+func handleDayReport(bot *tgbotapi.BotAPI, chatID int64, dayOffset int) {
+	ctx := context.Background()
+
+	// Türkiye saati için UTC+3
+	now := time.Now().UTC().Add(3 * time.Hour)
+	targetDay := now.AddDate(0, 0, dayOffset)
+	startOfDay := time.Date(targetDay.Year(), targetDay.Month(), targetDay.Day(), 0, 0, 0, 0, time.UTC)
+	endOfDay := startOfDay.Add(24 * time.Hour)
+	startOfDayUTC := startOfDay.Add(-3 * time.Hour)
+	endOfDayUTC := endOfDay.Add(-3 * time.Hour)
+
+	// Genel istatistikler
+	var stats struct {
+		Total float64 `bun:"total"`
+		Count int     `bun:"count"`
+	}
+	err := db.NewSelect().
+		TableExpr("orders").
+		ColumnExpr("COALESCE(SUM(amount), 0) as total").
+		ColumnExpr("COUNT(*) as count").
+		Where("event_time >= ?", startOfDayUTC).
+		Where("event_time < ?", endOfDayUTC).
+		Scan(ctx, &stats)
+
+	if err != nil {
+		log.Printf("Günlük rapor sorgu hatası: %v", err)
+		msg := tgbotapi.NewMessage(chatID, "❌ Veritabanı sorgu hatası oluştu.")
+		bot.Send(msg)
+		return
+	}
+
+	// Bağış kalemleri
+	var items []struct {
+		ItemName string  `bun:"item_name"`
+		Total    float64 `bun:"total"`
+		Count    int     `bun:"count"`
+	}
+	db.NewRaw(`
+		SELECT 
+			item->>'item_name' as item_name,
+			SUM((item->>'price')::numeric * (item->>'quantity')::numeric) as total,
+			SUM((item->>'quantity')::numeric)::int as count
+		FROM orders o, jsonb_array_elements(o.items) as item
+		WHERE o.event_time >= ? AND o.event_time < ?
+		GROUP BY item->>'item_name'
+		ORDER BY total DESC
+	`, startOfDayUTC, endOfDayUTC).Scan(ctx, &items)
+
+	// Kaynak dağılımı
+	var sources []struct {
+		Source string  `bun:"source"`
+		Total  float64 `bun:"total"`
+		Count  int     `bun:"count"`
+	}
+	db.NewRaw(`
+		SELECT 
+			CASE 
+				WHEN utm_source IS NOT NULL AND utm_source != '' THEN utm_source
+				WHEN traffic_channel = 'google' THEN 'Google Ads'
+				ELSE 'Doğrudan'
+			END as source,
+			SUM(amount) as total,
+			COUNT(*) as count
+		FROM orders
+		WHERE event_time >= ? AND event_time < ?
+		GROUP BY 1
+		ORDER BY total DESC
+	`, startOfDayUTC, endOfDayUTC).Scan(ctx, &sources)
+
+	// Rapor başlığı
+	gunAdi := getTurkishDayName(targetDay.Weekday())
+	var title string
+	if dayOffset == 0 {
+		title = "☀️ BUGÜNÜN RAPORU"
+	} else {
+		title = "📅 DÜNÜN RAPORU"
+	}
+
+	var sb strings.Builder
+	sb.WriteString("━━━━━━━━━━━━━━━━━━━━━━\n")
+	sb.WriteString(fmt.Sprintf("<b>%s</b>\n", title))
+	sb.WriteString("━━━━━━━━━━━━━━━━━━━━━━\n\n")
+	sb.WriteString(fmt.Sprintf("📅 <b>Tarih:</b> %s, %s\n\n", targetDay.Format("02 Ocak 2006"), gunAdi))
+
+	if stats.Count == 0 {
+		sb.WriteString("ℹ️ Bu tarihte bağış bulunmamaktadır.\n")
+	} else {
+		// Genel özet
+		sb.WriteString("━━━━━━━━━━━━━━━━━━━━━━\n")
+		sb.WriteString("💰 <b>GENEL ÖZET</b>\n")
+		sb.WriteString("━━━━━━━━━━━━━━━━━━━━━━\n\n")
+		sb.WriteString(fmt.Sprintf("   🛒 Bağış Sayısı  : <b>%d</b>\n", stats.Count))
+		sb.WriteString(fmt.Sprintf("   💵 Toplam Tutar  : <b>%.2f TRY</b>\n", stats.Total))
+		sb.WriteString(fmt.Sprintf("   📊 Ortalama      : <b>%.2f TRY</b>\n\n", stats.Total/float64(stats.Count)))
+
+		// Bağış kalemleri
+		if len(items) > 0 {
+			sb.WriteString("━━━━━━━━━━━━━━━━━━━━━━\n")
+			sb.WriteString("📦 <b>BAĞIŞ KALEMLERİ</b>\n")
+			sb.WriteString("━━━━━━━━━━━━━━━━━━━━━━\n\n")
+			for i, item := range items {
+				emoji := getEmojiByRank(i)
+				percentage := (item.Total / stats.Total) * 100
+				sb.WriteString(fmt.Sprintf("%s <b>%s</b>\n", emoji, item.ItemName))
+				sb.WriteString(fmt.Sprintf("   └ %.2f TRY | %d adet | %%%.1f\n\n", item.Total, item.Count, percentage))
+			}
+		}
+
+		// Kaynak dağılımı
+		if len(sources) > 0 {
+			sb.WriteString("━━━━━━━━━━━━━━━━━━━━━━\n")
+			sb.WriteString("📡 <b>KAYNAK DAĞILIMI</b>\n")
+			sb.WriteString("━━━━━━━━━━━━━━━━━━━━━━\n\n")
+			for _, s := range sources {
+				percentage := (s.Total / stats.Total) * 100
+				sb.WriteString(fmt.Sprintf("   • <b>%s</b>\n", s.Source))
+				sb.WriteString(fmt.Sprintf("     └ %.2f TRY | %d bağış | %%%.1f\n\n", s.Total, s.Count, percentage))
+			}
+		}
+	}
+
+	sb.WriteString("━━━━━━━━━━━━━━━━━━━━━━\n")
+
+	msg := tgbotapi.NewMessage(chatID, sb.String())
+	msg.ParseMode = "HTML"
+	bot.Send(msg)
+}
+
+// handleSMSBugunCommand /sms-bugun komutunu işler
+func handleSMSBugunCommand(bot *tgbotapi.BotAPI, chatID int64) {
+	now := time.Now().UTC().Add(3 * time.Hour)
+	handleSourceDayReport(bot, chatID, "sms", now)
+}
+
+// handleMailBugunCommand /mail-bugun komutunu işler
+func handleMailBugunCommand(bot *tgbotapi.BotAPI, chatID int64) {
+	now := time.Now().UTC().Add(3 * time.Hour)
+	handleSourceDayReport(bot, chatID, "email", now)
+}
+
+// handleSMSCommand /sms tarih komutunu işler
+func handleSMSCommand(bot *tgbotapi.BotAPI, chatID int64, args string) {
+	args = strings.TrimSpace(args)
+	if args == "" {
+		msg := tgbotapi.NewMessage(chatID, "⚠️ Lütfen tarih belirtin.\n\nKullanım: <code>/sms DD.MM.YYYY</code>\n\nÖrnek: <code>/sms 15.02.2026</code>")
+		msg.ParseMode = "HTML"
+		bot.Send(msg)
+		return
+	}
+
+	targetDate, err := time.Parse("02.01.2006", args)
+	if err != nil {
+		msg := tgbotapi.NewMessage(chatID, "⚠️ Geçersiz tarih formatı.\n\nDoğru format: <code>DD.MM.YYYY</code>\n\nÖrnek: <code>/sms 15.02.2026</code>")
+		msg.ParseMode = "HTML"
+		bot.Send(msg)
+		return
+	}
+
+	handleSourceDayReport(bot, chatID, "sms", targetDate)
+}
+
+// handleMailCommand /mail tarih komutunu işler
+func handleMailCommand(bot *tgbotapi.BotAPI, chatID int64, args string) {
+	args = strings.TrimSpace(args)
+	if args == "" {
+		msg := tgbotapi.NewMessage(chatID, "⚠️ Lütfen tarih belirtin.\n\nKullanım: <code>/mail DD.MM.YYYY</code>\n\nÖrnek: <code>/mail 15.02.2026</code>")
+		msg.ParseMode = "HTML"
+		bot.Send(msg)
+		return
+	}
+
+	targetDate, err := time.Parse("02.01.2006", args)
+	if err != nil {
+		msg := tgbotapi.NewMessage(chatID, "⚠️ Geçersiz tarih formatı.\n\nDoğru format: <code>DD.MM.YYYY</code>\n\nÖrnek: <code>/mail 15.02.2026</code>")
+		msg.ParseMode = "HTML"
+		bot.Send(msg)
+		return
+	}
+
+	handleSourceDayReport(bot, chatID, "email", targetDate)
+}
+
+// handleSourceDayReport belirli bir kaynak ve tarih için rapor oluşturur
+func handleSourceDayReport(bot *tgbotapi.BotAPI, chatID int64, source string, targetDate time.Time) {
+	ctx := context.Background()
+
+	startOfDay := time.Date(targetDate.Year(), targetDate.Month(), targetDate.Day(), 0, 0, 0, 0, time.UTC)
+	endOfDay := startOfDay.Add(24 * time.Hour)
+	startOfDayUTC := startOfDay.Add(-3 * time.Hour)
+	endOfDayUTC := endOfDay.Add(-3 * time.Hour)
+
+	// Kaynak filtresi
+	var sourceFilter string
+	var sourceTitle string
+	var sourceEmoji string
+
+	switch source {
+	case "sms":
+		sourceFilter = "(utm_source = 'sms' OR utm_medium = 'sms')"
+		sourceTitle = "SMS"
+		sourceEmoji = "💬"
+	case "email":
+		sourceFilter = "(utm_source = 'email' OR utm_medium = 'email')"
+		sourceTitle = "E-POSTA"
+		sourceEmoji = "📧"
+	default:
+		sourceFilter = fmt.Sprintf("utm_source = '%s'", source)
+		sourceTitle = strings.ToUpper(source)
+		sourceEmoji = "📊"
+	}
+
+	// Genel istatistikler
+	var stats struct {
+		Total float64 `bun:"total"`
+		Count int     `bun:"count"`
+	}
+	err := db.NewRaw(fmt.Sprintf(`
+		SELECT COALESCE(SUM(amount), 0) as total, COUNT(*) as count
+		FROM orders
+		WHERE %s AND event_time >= ? AND event_time < ?
+	`, sourceFilter), startOfDayUTC, endOfDayUTC).Scan(ctx, &stats)
+
+	if err != nil {
+		log.Printf("Kaynak rapor sorgu hatası: %v", err)
+		msg := tgbotapi.NewMessage(chatID, "❌ Veritabanı sorgu hatası oluştu.")
+		bot.Send(msg)
+		return
+	}
+
+	// Bağış kalemleri
+	var items []struct {
+		ItemName string  `bun:"item_name"`
+		Total    float64 `bun:"total"`
+		Count    int     `bun:"count"`
+	}
+	db.NewRaw(fmt.Sprintf(`
+		SELECT 
+			item->>'item_name' as item_name,
+			SUM((item->>'price')::numeric * (item->>'quantity')::numeric) as total,
+			SUM((item->>'quantity')::numeric)::int as count
+		FROM orders o, jsonb_array_elements(o.items) as item
+		WHERE %s AND o.event_time >= ? AND o.event_time < ?
+		GROUP BY item->>'item_name'
+		ORDER BY total DESC
+	`, sourceFilter), startOfDayUTC, endOfDayUTC).Scan(ctx, &items)
+
+	// Kampanya bazlı dağılım
+	var campaigns []struct {
+		Campaign string  `bun:"campaign"`
+		Total    float64 `bun:"total"`
+		Count    int     `bun:"count"`
+	}
+	db.NewRaw(fmt.Sprintf(`
+		SELECT 
+			COALESCE(utm_campaign, 'Belirtilmemiş') as campaign,
+			SUM(amount) as total,
+			COUNT(*) as count
+		FROM orders
+		WHERE %s AND event_time >= ? AND event_time < ?
+		GROUP BY utm_campaign
+		ORDER BY total DESC
+	`, sourceFilter), startOfDayUTC, endOfDayUTC).Scan(ctx, &campaigns)
+
+	// Rapor oluştur
+	gunAdi := getTurkishDayName(targetDate.Weekday())
+
+	var sb strings.Builder
+	sb.WriteString("━━━━━━━━━━━━━━━━━━━━━━\n")
+	sb.WriteString(fmt.Sprintf("%s <b>%s RAPORU</b>\n", sourceEmoji, sourceTitle))
+	sb.WriteString("━━━━━━━━━━━━━━━━━━━━━━\n\n")
+	sb.WriteString(fmt.Sprintf("📅 <b>Tarih:</b> %s, %s\n\n", targetDate.Format("02 Ocak 2006"), gunAdi))
+
+	if stats.Count == 0 {
+		sb.WriteString(fmt.Sprintf("ℹ️ Bu tarihte %s kaynaklı bağış bulunmamaktadır.\n", sourceTitle))
+	} else {
+		// Genel özet
+		sb.WriteString("━━━━━━━━━━━━━━━━━━━━━━\n")
+		sb.WriteString("💰 <b>GENEL ÖZET</b>\n")
+		sb.WriteString("━━━━━━━━━━━━━━━━━━━━━━\n\n")
+		sb.WriteString(fmt.Sprintf("   🛒 Bağış Sayısı  : <b>%d</b>\n", stats.Count))
+		sb.WriteString(fmt.Sprintf("   💵 Toplam Tutar  : <b>%.2f TRY</b>\n", stats.Total))
+		sb.WriteString(fmt.Sprintf("   📊 Ortalama      : <b>%.2f TRY</b>\n\n", stats.Total/float64(stats.Count)))
+
+		// Bağış kalemleri
+		if len(items) > 0 {
+			sb.WriteString("━━━━━━━━━━━━━━━━━━━━━━\n")
+			sb.WriteString("📦 <b>BAĞIŞ KALEMLERİ</b>\n")
+			sb.WriteString("━━━━━━━━━━━━━━━━━━━━━━\n\n")
+			for i, item := range items {
+				emoji := getEmojiByRank(i)
+				percentage := (item.Total / stats.Total) * 100
+				sb.WriteString(fmt.Sprintf("%s <b>%s</b>\n", emoji, item.ItemName))
+				sb.WriteString(fmt.Sprintf("   └ %.2f TRY | %d adet | %%%.1f\n\n", item.Total, item.Count, percentage))
+			}
+		}
+
+		// Kampanya dağılımı
+		if len(campaigns) > 0 {
+			sb.WriteString("━━━━━━━━━━━━━━━━━━━━━━\n")
+			sb.WriteString("🎯 <b>KAMPANYA DAĞILIMI</b>\n")
+			sb.WriteString("━━━━━━━━━━━━━━━━━━━━━━\n\n")
+			for _, c := range campaigns {
+				percentage := (c.Total / stats.Total) * 100
+				sb.WriteString(fmt.Sprintf("   • <b>%s</b>\n", c.Campaign))
+				sb.WriteString(fmt.Sprintf("     └ %.2f TRY | %d bağış | %%%.1f\n\n", c.Total, c.Count, percentage))
+			}
+		}
+	}
+
+	sb.WriteString("━━━━━━━━━━━━━━━━━━━━━━\n")
 
 	msg := tgbotapi.NewMessage(chatID, sb.String())
 	msg.ParseMode = "HTML"
