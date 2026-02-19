@@ -820,14 +820,8 @@ func handleSonCommand(bot *tgbotapi.BotAPI, chatID int64, args string) {
 func handleGunlukCommand(bot *tgbotapi.BotAPI, chatID int64) {
 	ctx := context.Background()
 
-	// Türkiye saati için UTC+3 ekle (timezone dosyası olmayabilir)
-	now := time.Now().UTC().Add(3 * time.Hour)
-	startOfDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
-	endOfDay := startOfDay.Add(24 * time.Hour)
-
-	// UTC olarak kullan (zaten UTC'de hesapladık)
-	startOfDayUTC := startOfDay.Add(-3 * time.Hour)
-	endOfDayUTC := endOfDay.Add(-3 * time.Hour)
+	// Türkiye saatine göre bugünün UTC aralığını al
+	startOfDayUTC, endOfDayUTC, now := getDayRangeUTC(0)
 
 	// Genel istatistikler
 	var stats struct {
@@ -924,6 +918,32 @@ func getTurkishDayName(day time.Weekday) string {
 		time.Saturday:  "Cumartesi",
 	}
 	return days[day]
+}
+
+// getTurkeyLocation Türkiye timezone'unu döner (UTC+3)
+func getTurkeyLocation() *time.Location {
+	return time.FixedZone("Europe/Istanbul", 3*60*60)
+}
+
+// getTurkeyNow Türkiye saatinde şu anki zamanı döner
+func getTurkeyNow() time.Time {
+	return time.Now().In(getTurkeyLocation())
+}
+
+// getDayRangeUTC belirli bir gün için UTC zaman aralığını döner
+// dayOffset: 0 = bugün, -1 = dün, 1 = yarın
+func getDayRangeUTC(dayOffset int) (startUTC, endUTC time.Time, turkeyDate time.Time) {
+	turkeyLoc := getTurkeyLocation()
+	now := time.Now().In(turkeyLoc)
+	targetDay := now.AddDate(0, 0, dayOffset)
+
+	// Türkiye'de günün başlangıcı (00:00 TR)
+	startOfDayTR := time.Date(targetDay.Year(), targetDay.Month(), targetDay.Day(), 0, 0, 0, 0, turkeyLoc)
+	// Türkiye'de günün sonu (24:00 TR = ertesi gün 00:00)
+	endOfDayTR := startOfDayTR.AddDate(0, 0, 1)
+
+	// UTC'ye çevir
+	return startOfDayTR.UTC(), endOfDayTR.UTC(), targetDay
 }
 
 // handleOrtalamaCommand /ortalama komutunu işler - Ortalama bağış analizi
@@ -1813,12 +1833,8 @@ func handleKalemCommand(bot *tgbotapi.BotAPI, chatID int64, args string) {
 
 	ctx := context.Background()
 
-	// Türkiye saati için UTC+3
-	now := time.Now().UTC().Add(3 * time.Hour)
-	startOfDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
-	endOfDay := startOfDay.Add(24 * time.Hour)
-	startOfDayUTC := startOfDay.Add(-3 * time.Hour)
-	endOfDayUTC := endOfDay.Add(-3 * time.Hour)
+	// Türkiye saatine göre bugünün UTC aralığını al
+	startOfDayUTC, endOfDayUTC, now := getDayRangeUTC(0)
 
 	// 1. Tüm zamanlar toplamı
 	var allTimeStats struct {
@@ -1957,12 +1973,8 @@ func handleKalemCommand(bot *tgbotapi.BotAPI, chatID int64, args string) {
 func handleSourceAnalysisCommand(bot *tgbotapi.BotAPI, chatID int64, source string) {
 	ctx := context.Background()
 
-	// Türkiye saati için UTC+3
-	now := time.Now().UTC().Add(3 * time.Hour)
-	startOfDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
-	endOfDay := startOfDay.Add(24 * time.Hour)
-	startOfDayUTC := startOfDay.Add(-3 * time.Hour)
-	endOfDayUTC := endOfDay.Add(-3 * time.Hour)
+	// Türkiye saatine göre bugünün UTC aralığını al
+	startOfDayUTC, endOfDayUTC, now := getDayRangeUTC(0)
 
 	// Kaynak filtresi oluştur
 	var sourceFilter string
@@ -2108,13 +2120,8 @@ func handleDunCommand(bot *tgbotapi.BotAPI, chatID int64) {
 func handleDayReport(bot *tgbotapi.BotAPI, chatID int64, dayOffset int) {
 	ctx := context.Background()
 
-	// Türkiye saati için UTC+3
-	now := time.Now().UTC().Add(3 * time.Hour)
-	targetDay := now.AddDate(0, 0, dayOffset)
-	startOfDay := time.Date(targetDay.Year(), targetDay.Month(), targetDay.Day(), 0, 0, 0, 0, time.UTC)
-	endOfDay := startOfDay.Add(24 * time.Hour)
-	startOfDayUTC := startOfDay.Add(-3 * time.Hour)
-	endOfDayUTC := endOfDay.Add(-3 * time.Hour)
+	// Türkiye saatine göre günün UTC aralığını al
+	startOfDayUTC, endOfDayUTC, targetDay := getDayRangeUTC(dayOffset)
 
 	// Genel istatistikler
 	var stats struct {
@@ -2235,14 +2242,14 @@ func handleDayReport(bot *tgbotapi.BotAPI, chatID int64, dayOffset int) {
 
 // handleSMSBugunCommand /sms-bugun komutunu işler
 func handleSMSBugunCommand(bot *tgbotapi.BotAPI, chatID int64) {
-	now := time.Now().UTC().Add(3 * time.Hour)
-	handleSourceDayReport(bot, chatID, "sms", now)
+	startUTC, endUTC, targetDay := getDayRangeUTC(0)
+	handleSourceDayReportWithRange(bot, chatID, "sms", startUTC, endUTC, targetDay)
 }
 
 // handleMailBugunCommand /mail-bugun komutunu işler
 func handleMailBugunCommand(bot *tgbotapi.BotAPI, chatID int64) {
-	now := time.Now().UTC().Add(3 * time.Hour)
-	handleSourceDayReport(bot, chatID, "email", now)
+	startUTC, endUTC, targetDay := getDayRangeUTC(0)
+	handleSourceDayReportWithRange(bot, chatID, "email", startUTC, endUTC, targetDay)
 }
 
 // handleSMSCommand /sms tarih komutunu işler
@@ -2255,7 +2262,8 @@ func handleSMSCommand(bot *tgbotapi.BotAPI, chatID int64, args string) {
 		return
 	}
 
-	targetDate, err := time.Parse("02.01.2006", args)
+	turkeyLoc := getTurkeyLocation()
+	targetDate, err := time.ParseInLocation("02.01.2006", args, turkeyLoc)
 	if err != nil {
 		msg := tgbotapi.NewMessage(chatID, "⚠️ Geçersiz tarih formatı.\n\nDoğru format: <code>DD.MM.YYYY</code>\n\nÖrnek: <code>/sms 15.02.2026</code>")
 		msg.ParseMode = "HTML"
@@ -2263,7 +2271,10 @@ func handleSMSCommand(bot *tgbotapi.BotAPI, chatID int64, args string) {
 		return
 	}
 
-	handleSourceDayReport(bot, chatID, "sms", targetDate)
+	// Günün başlangıç ve bitiş zamanlarını hesapla
+	startOfDayTR := time.Date(targetDate.Year(), targetDate.Month(), targetDate.Day(), 0, 0, 0, 0, turkeyLoc)
+	endOfDayTR := startOfDayTR.AddDate(0, 0, 1)
+	handleSourceDayReportWithRange(bot, chatID, "sms", startOfDayTR.UTC(), endOfDayTR.UTC(), targetDate)
 }
 
 // handleMailCommand /mail tarih komutunu işler
@@ -2276,7 +2287,8 @@ func handleMailCommand(bot *tgbotapi.BotAPI, chatID int64, args string) {
 		return
 	}
 
-	targetDate, err := time.Parse("02.01.2006", args)
+	turkeyLoc := getTurkeyLocation()
+	targetDate, err := time.ParseInLocation("02.01.2006", args, turkeyLoc)
 	if err != nil {
 		msg := tgbotapi.NewMessage(chatID, "⚠️ Geçersiz tarih formatı.\n\nDoğru format: <code>DD.MM.YYYY</code>\n\nÖrnek: <code>/mail 15.02.2026</code>")
 		msg.ParseMode = "HTML"
@@ -2284,17 +2296,15 @@ func handleMailCommand(bot *tgbotapi.BotAPI, chatID int64, args string) {
 		return
 	}
 
-	handleSourceDayReport(bot, chatID, "email", targetDate)
+	// Günün başlangıç ve bitiş zamanlarını hesapla
+	startOfDayTR := time.Date(targetDate.Year(), targetDate.Month(), targetDate.Day(), 0, 0, 0, 0, turkeyLoc)
+	endOfDayTR := startOfDayTR.AddDate(0, 0, 1)
+	handleSourceDayReportWithRange(bot, chatID, "email", startOfDayTR.UTC(), endOfDayTR.UTC(), targetDate)
 }
 
-// handleSourceDayReport belirli bir kaynak ve tarih için rapor oluşturur
-func handleSourceDayReport(bot *tgbotapi.BotAPI, chatID int64, source string, targetDate time.Time) {
+// handleSourceDayReportWithRange belirli bir kaynak ve UTC zaman aralığı için rapor oluşturur
+func handleSourceDayReportWithRange(bot *tgbotapi.BotAPI, chatID int64, source string, startOfDayUTC, endOfDayUTC, targetDate time.Time) {
 	ctx := context.Background()
-
-	startOfDay := time.Date(targetDate.Year(), targetDate.Month(), targetDate.Day(), 0, 0, 0, 0, time.UTC)
-	endOfDay := startOfDay.Add(24 * time.Hour)
-	startOfDayUTC := startOfDay.Add(-3 * time.Hour)
-	endOfDayUTC := endOfDay.Add(-3 * time.Hour)
 
 	// Kaynak filtresi
 	var sourceFilter string
