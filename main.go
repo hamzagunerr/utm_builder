@@ -1044,10 +1044,7 @@ func handleExportCommand(bot *tgbotapi.BotAPI, chatID int64, args string) {
 	f := excelize.NewFile()
 	defer f.Close()
 
-	sheetName := "Bağışlar"
-	f.SetSheetName("Sheet1", sheetName)
-
-	// Başlık stilleri
+	// Stilleri oluştur
 	headerStyle, _ := f.NewStyle(&excelize.Style{
 		Font:      &excelize.Font{Bold: true, Color: "FFFFFF", Size: 11},
 		Fill:      excelize.Fill{Type: "pattern", Color: []string{"4472C4"}, Pattern: 1},
@@ -1060,15 +1057,6 @@ func handleExportCommand(bot *tgbotapi.BotAPI, chatID int64, args string) {
 		},
 	})
 
-	// Başlıklar
-	headers := []string{"Sipariş ID", "Tutar", "Para Birimi", "Bağış Kalemleri", "UTM Source", "UTM Medium", "UTM Campaign", "UTM Content", "UTM Term", "GAD Source", "GAD Campaign ID", "Traffic Channel", "Tarih", "Kayıt Tarihi"}
-	for i, h := range headers {
-		cell, _ := excelize.CoordinatesToCellName(i+1, 1)
-		f.SetCellValue(sheetName, cell, h)
-		f.SetCellStyle(sheetName, cell, cell, headerStyle)
-	}
-
-	// Veri stilleri
 	dataStyle, _ := f.NewStyle(&excelize.Style{
 		Border: []excelize.Border{
 			{Type: "left", Color: "000000", Style: 1},
@@ -1080,7 +1068,7 @@ func handleExportCommand(bot *tgbotapi.BotAPI, chatID int64, args string) {
 	})
 
 	amountStyle, _ := f.NewStyle(&excelize.Style{
-		NumFmt: 4, // #,##0.00
+		NumFmt: 4,
 		Border: []excelize.Border{
 			{Type: "left", Color: "000000", Style: 1},
 			{Type: "top", Color: "000000", Style: 1},
@@ -1090,75 +1078,65 @@ func handleExportCommand(bot *tgbotapi.BotAPI, chatID int64, args string) {
 		Alignment: &excelize.Alignment{Horizontal: "right", Vertical: "center"},
 	})
 
-	// Verileri ekle
-	for i, o := range orders {
-		row := i + 2
+	// 1. Ana "Tüm Bağışlar" sheet'i
+	mainSheet := "Tüm Bağışlar"
+	f.SetSheetName("Sheet1", mainSheet)
+	writeOrdersToSheet(f, mainSheet, orders, headerStyle, dataStyle, amountStyle)
 
-		// Bağış kalemlerini string'e çevir
-		var itemsStr string
-		for j, item := range o.Items {
-			if j > 0 {
-				itemsStr += ", "
-			}
-			itemsStr += fmt.Sprintf("%s (x%d)", item.ItemName, item.Quantity)
+	// 2. UTM Source bazlı sheet'ler oluştur
+	sourceMap := make(map[string][]Order)
+	for _, o := range orders {
+		source := o.UTMSource
+		if source == "" {
+			source = "Bilinmiyor"
 		}
+		sourceMap[source] = append(sourceMap[source], o)
+	}
 
-		f.SetCellValue(sheetName, fmt.Sprintf("A%d", row), o.OrderID)
-		f.SetCellValue(sheetName, fmt.Sprintf("B%d", row), o.Amount)
-		f.SetCellValue(sheetName, fmt.Sprintf("C%d", row), o.Currency)
-		f.SetCellValue(sheetName, fmt.Sprintf("D%d", row), itemsStr)
-		f.SetCellValue(sheetName, fmt.Sprintf("E%d", row), o.UTMSource)
-		f.SetCellValue(sheetName, fmt.Sprintf("F%d", row), o.UTMMedium)
-		f.SetCellValue(sheetName, fmt.Sprintf("G%d", row), o.UTMCampaign)
-		f.SetCellValue(sheetName, fmt.Sprintf("H%d", row), o.UTMContent)
-		f.SetCellValue(sheetName, fmt.Sprintf("I%d", row), o.UTMTerm)
-		f.SetCellValue(sheetName, fmt.Sprintf("J%d", row), o.GadSource)
-		f.SetCellValue(sheetName, fmt.Sprintf("K%d", row), o.GadCampaignID)
-		f.SetCellValue(sheetName, fmt.Sprintf("L%d", row), o.TrafficChannel)
-		f.SetCellValue(sheetName, fmt.Sprintf("M%d", row), o.EventTime.Format("02.01.2006 15:04:05"))
-		f.SetCellValue(sheetName, fmt.Sprintf("N%d", row), o.CreatedAt.Format("02.01.2006 15:04:05"))
-
-		// Stiller uygula
-		for col := 1; col <= 14; col++ {
-			cell, _ := excelize.CoordinatesToCellName(col, row)
-			if col == 2 {
-				f.SetCellStyle(sheetName, cell, cell, amountStyle)
-			} else {
-				f.SetCellStyle(sheetName, cell, cell, dataStyle)
-			}
+	// Kaynak sheet'lerini oluştur
+	for source, sourceOrders := range sourceMap {
+		if len(sourceOrders) > 0 {
+			sheetName := sanitizeSheetName("Kaynak_" + source)
+			f.NewSheet(sheetName)
+			writeOrdersToSheet(f, sheetName, sourceOrders, headerStyle, dataStyle, amountStyle)
 		}
 	}
 
-	// Sütun genişlikleri
-	f.SetColWidth(sheetName, "A", "A", 40)
-	f.SetColWidth(sheetName, "B", "B", 12)
-	f.SetColWidth(sheetName, "C", "C", 10)
-	f.SetColWidth(sheetName, "D", "D", 40)
-	f.SetColWidth(sheetName, "E", "E", 12)
-	f.SetColWidth(sheetName, "F", "F", 15)
-	f.SetColWidth(sheetName, "G", "G", 25)
-	f.SetColWidth(sheetName, "H", "H", 20)
-	f.SetColWidth(sheetName, "I", "I", 15)
-	f.SetColWidth(sheetName, "J", "J", 12)
-	f.SetColWidth(sheetName, "K", "K", 18)
-	f.SetColWidth(sheetName, "L", "L", 15)
-	f.SetColWidth(sheetName, "M", "M", 18)
-	f.SetColWidth(sheetName, "N", "N", 18)
+	// 3. GAD Campaign ID bazlı sheet'ler oluştur
+	gadMap := make(map[string][]Order)
+	for _, o := range orders {
+		gadID := o.GadCampaignID
+		if gadID != "" {
+			gadMap[gadID] = append(gadMap[gadID], o)
+		}
+	}
 
-	// Özet sayfası ekle
+	// GAD Campaign sheet'lerini oluştur
+	for gadID, gadOrders := range gadMap {
+		if len(gadOrders) > 0 {
+			sheetName := sanitizeSheetName("GAD_" + gadID)
+			f.NewSheet(sheetName)
+			writeOrdersToSheet(f, sheetName, gadOrders, headerStyle, dataStyle, amountStyle)
+		}
+	}
+
+	// 4. Özet sayfası ekle
 	summarySheet := "Özet"
 	f.NewSheet(summarySheet)
 
-	// Özet başlığı
-	f.SetCellValue(summarySheet, "A1", "📊 Bağış Raporu Özeti")
-	f.MergeCell(summarySheet, "A1", "C1")
 	titleStyle, _ := f.NewStyle(&excelize.Style{
 		Font:      &excelize.Font{Bold: true, Size: 14, Color: "4472C4"},
 		Alignment: &excelize.Alignment{Horizontal: "center"},
 	})
+	subTitleStyle, _ := f.NewStyle(&excelize.Style{
+		Font:      &excelize.Font{Bold: true, Size: 12, Color: "2E7D32"},
+		Alignment: &excelize.Alignment{Horizontal: "left"},
+	})
+
+	f.SetCellValue(summarySheet, "A1", "📊 Bağış Raporu Özeti")
+	f.MergeCell(summarySheet, "A1", "C1")
 	f.SetCellStyle(summarySheet, "A1", "C1", titleStyle)
 
-	// Tarih aralığı
 	if hasDateFilter {
 		f.SetCellValue(summarySheet, "A3", fmt.Sprintf("Tarih Aralığı: %s - %s", startDate.Format("02.01.2006"), endDate.Format("02.01.2006")))
 	} else {
@@ -1172,15 +1150,64 @@ func handleExportCommand(bot *tgbotapi.BotAPI, chatID int64, args string) {
 	}
 	avgAmount := totalAmount / float64(len(orders))
 
-	f.SetCellValue(summarySheet, "A5", "Toplam Bağış Sayısı:")
-	f.SetCellValue(summarySheet, "B5", len(orders))
-	f.SetCellValue(summarySheet, "A6", "Toplam Tutar:")
-	f.SetCellValue(summarySheet, "B6", fmt.Sprintf("%.2f TRY", totalAmount))
-	f.SetCellValue(summarySheet, "A7", "Ortalama Bağış:")
-	f.SetCellValue(summarySheet, "B7", fmt.Sprintf("%.2f TRY", avgAmount))
+	f.SetCellValue(summarySheet, "A5", "GENEL İSTATİSTİKLER")
+	f.SetCellStyle(summarySheet, "A5", "A5", subTitleStyle)
+	f.SetCellValue(summarySheet, "A6", "Toplam Bağış Sayısı:")
+	f.SetCellValue(summarySheet, "B6", len(orders))
+	f.SetCellValue(summarySheet, "A7", "Toplam Tutar:")
+	f.SetCellValue(summarySheet, "B7", fmt.Sprintf("%.2f TRY", totalAmount))
+	f.SetCellValue(summarySheet, "A8", "Ortalama Bağış:")
+	f.SetCellValue(summarySheet, "B8", fmt.Sprintf("%.2f TRY", avgAmount))
 
-	f.SetColWidth(summarySheet, "A", "A", 25)
-	f.SetColWidth(summarySheet, "B", "B", 20)
+	// Kaynak bazlı özet
+	row := 10
+	f.SetCellValue(summarySheet, fmt.Sprintf("A%d", row), "KAYNAK BAZLI ÖZET")
+	f.SetCellStyle(summarySheet, fmt.Sprintf("A%d", row), fmt.Sprintf("A%d", row), subTitleStyle)
+	row++
+	f.SetCellValue(summarySheet, fmt.Sprintf("A%d", row), "Kaynak")
+	f.SetCellValue(summarySheet, fmt.Sprintf("B%d", row), "Bağış Sayısı")
+	f.SetCellValue(summarySheet, fmt.Sprintf("C%d", row), "Toplam Tutar")
+	f.SetCellStyle(summarySheet, fmt.Sprintf("A%d", row), fmt.Sprintf("C%d", row), headerStyle)
+	row++
+
+	for source, sourceOrders := range sourceMap {
+		var sourceTotal float64
+		for _, o := range sourceOrders {
+			sourceTotal += o.Amount
+		}
+		f.SetCellValue(summarySheet, fmt.Sprintf("A%d", row), source)
+		f.SetCellValue(summarySheet, fmt.Sprintf("B%d", row), len(sourceOrders))
+		f.SetCellValue(summarySheet, fmt.Sprintf("C%d", row), fmt.Sprintf("%.2f TRY", sourceTotal))
+		row++
+	}
+
+	// GAD Campaign bazlı özet
+	if len(gadMap) > 0 {
+		row += 2
+		f.SetCellValue(summarySheet, fmt.Sprintf("A%d", row), "GAD CAMPAIGN BAZLI ÖZET")
+		f.SetCellStyle(summarySheet, fmt.Sprintf("A%d", row), fmt.Sprintf("A%d", row), subTitleStyle)
+		row++
+		f.SetCellValue(summarySheet, fmt.Sprintf("A%d", row), "GAD Campaign ID")
+		f.SetCellValue(summarySheet, fmt.Sprintf("B%d", row), "Bağış Sayısı")
+		f.SetCellValue(summarySheet, fmt.Sprintf("C%d", row), "Toplam Tutar")
+		f.SetCellStyle(summarySheet, fmt.Sprintf("A%d", row), fmt.Sprintf("C%d", row), headerStyle)
+		row++
+
+		for gadID, gadOrders := range gadMap {
+			var gadTotal float64
+			for _, o := range gadOrders {
+				gadTotal += o.Amount
+			}
+			f.SetCellValue(summarySheet, fmt.Sprintf("A%d", row), gadID)
+			f.SetCellValue(summarySheet, fmt.Sprintf("B%d", row), len(gadOrders))
+			f.SetCellValue(summarySheet, fmt.Sprintf("C%d", row), fmt.Sprintf("%.2f TRY", gadTotal))
+			row++
+		}
+	}
+
+	f.SetColWidth(summarySheet, "A", "A", 30)
+	f.SetColWidth(summarySheet, "B", "B", 15)
+	f.SetColWidth(summarySheet, "C", "C", 20)
 
 	// Dosyayı kaydet
 	var filename string
@@ -1198,9 +1225,13 @@ func handleExportCommand(bot *tgbotapi.BotAPI, chatID int64, args string) {
 		return
 	}
 
+	// Sheet sayısını hesapla
+	sheetCount := 2 + len(sourceMap) + len(gadMap) // Özet + Tüm Bağışlar + kaynaklar + GAD'ler
+
 	// Telegram'a gönder
 	doc := tgbotapi.NewDocument(chatID, tgbotapi.FilePath(filepath))
-	doc.Caption = fmt.Sprintf("📊 Bağış Raporu\n📁 %d kayıt\n💰 Toplam: %.2f TRY", len(orders), totalAmount)
+	doc.Caption = fmt.Sprintf("📊 Bağış Raporu\n📁 %d kayıt | %d sayfa\n💰 Toplam: %.2f TRY\n\n📑 Sayfalar: Özet, Tüm Bağışlar, %d kaynak, %d GAD Campaign",
+		len(orders), sheetCount, totalAmount, len(sourceMap), len(gadMap))
 
 	if _, err := bot.Send(doc); err != nil {
 		log.Printf("Dosya gönderme hatası: %v", err)
@@ -2388,4 +2419,79 @@ func handleSourceDayReport(bot *tgbotapi.BotAPI, chatID int64, source string, ta
 	msg := tgbotapi.NewMessage(chatID, sb.String())
 	msg.ParseMode = "HTML"
 	bot.Send(msg)
+}
+
+// writeOrdersToSheet belirtilen sheet'e siparişleri yazar
+func writeOrdersToSheet(f *excelize.File, sheetName string, orders []Order, headerStyle, dataStyle, amountStyle int) {
+	headers := []string{"Sipariş ID", "Tutar", "Para Birimi", "Bağış Kalemleri", "UTM Source", "UTM Medium", "UTM Campaign", "UTM Content", "UTM Term", "GAD Source", "GAD Campaign ID", "Traffic Channel", "Tarih", "Kayıt Tarihi"}
+
+	for i, h := range headers {
+		cell, _ := excelize.CoordinatesToCellName(i+1, 1)
+		f.SetCellValue(sheetName, cell, h)
+		f.SetCellStyle(sheetName, cell, cell, headerStyle)
+	}
+
+	for i, o := range orders {
+		row := i + 2
+
+		var itemsStr string
+		for j, item := range o.Items {
+			if j > 0 {
+				itemsStr += ", "
+			}
+			itemsStr += fmt.Sprintf("%s (x%d)", item.ItemName, item.Quantity)
+		}
+
+		f.SetCellValue(sheetName, fmt.Sprintf("A%d", row), o.OrderID)
+		f.SetCellValue(sheetName, fmt.Sprintf("B%d", row), o.Amount)
+		f.SetCellValue(sheetName, fmt.Sprintf("C%d", row), o.Currency)
+		f.SetCellValue(sheetName, fmt.Sprintf("D%d", row), itemsStr)
+		f.SetCellValue(sheetName, fmt.Sprintf("E%d", row), o.UTMSource)
+		f.SetCellValue(sheetName, fmt.Sprintf("F%d", row), o.UTMMedium)
+		f.SetCellValue(sheetName, fmt.Sprintf("G%d", row), o.UTMCampaign)
+		f.SetCellValue(sheetName, fmt.Sprintf("H%d", row), o.UTMContent)
+		f.SetCellValue(sheetName, fmt.Sprintf("I%d", row), o.UTMTerm)
+		f.SetCellValue(sheetName, fmt.Sprintf("J%d", row), o.GadSource)
+		f.SetCellValue(sheetName, fmt.Sprintf("K%d", row), o.GadCampaignID)
+		f.SetCellValue(sheetName, fmt.Sprintf("L%d", row), o.TrafficChannel)
+		f.SetCellValue(sheetName, fmt.Sprintf("M%d", row), o.EventTime.Format("02.01.2006 15:04:05"))
+		f.SetCellValue(sheetName, fmt.Sprintf("N%d", row), o.CreatedAt.Format("02.01.2006 15:04:05"))
+
+		for col := 1; col <= 14; col++ {
+			cell, _ := excelize.CoordinatesToCellName(col, row)
+			if col == 2 {
+				f.SetCellStyle(sheetName, cell, cell, amountStyle)
+			} else {
+				f.SetCellStyle(sheetName, cell, cell, dataStyle)
+			}
+		}
+	}
+
+	f.SetColWidth(sheetName, "A", "A", 40)
+	f.SetColWidth(sheetName, "B", "B", 12)
+	f.SetColWidth(sheetName, "C", "C", 10)
+	f.SetColWidth(sheetName, "D", "D", 40)
+	f.SetColWidth(sheetName, "E", "E", 12)
+	f.SetColWidth(sheetName, "F", "F", 15)
+	f.SetColWidth(sheetName, "G", "G", 25)
+	f.SetColWidth(sheetName, "H", "H", 20)
+	f.SetColWidth(sheetName, "I", "I", 15)
+	f.SetColWidth(sheetName, "J", "J", 12)
+	f.SetColWidth(sheetName, "K", "K", 18)
+	f.SetColWidth(sheetName, "L", "L", 15)
+	f.SetColWidth(sheetName, "M", "M", 18)
+	f.SetColWidth(sheetName, "N", "N", 18)
+}
+
+// sanitizeSheetName Excel sheet adını geçerli hale getirir
+func sanitizeSheetName(name string) string {
+	invalid := []string{"\\", "/", "?", "*", "[", "]", ":"}
+	result := name
+	for _, char := range invalid {
+		result = strings.ReplaceAll(result, char, "_")
+	}
+	if len(result) > 31 {
+		result = result[:31]
+	}
+	return result
 }
