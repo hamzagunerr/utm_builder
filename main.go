@@ -248,7 +248,16 @@ func handleThrowData(c *fiber.Ctx) error {
 	// Telegram'a bildirim gönder (tüm hedeflere)
 	chatIDs := getNotificationChatIDs()
 	if len(chatIDs) > 0 && globalBot != nil {
-		message := formatOrderMessage(&req)
+		// Yüksek bağış kontrolü (24999 TL ve üzeri)
+		isHighDonation := req.Amount >= 24999
+
+		var message string
+		if isHighDonation {
+			message = formatHighDonationMessage(&req)
+		} else {
+			message = formatOrderMessage(&req)
+		}
+
 		for _, chatID := range chatIDs {
 			msg := tgbotapi.NewMessage(chatID, message)
 			msg.ParseMode = "HTML"
@@ -325,6 +334,65 @@ func formatOrderMessage(req *ThrowDataRequest) string {
 	if req.TrafficChannel != "" {
 		sb.WriteString(fmt.Sprintf("📡 <b>Trafik Kanalı:</b> %s\n", req.TrafficChannel))
 	}
+
+	return sb.String()
+}
+
+// formatHighDonationMessage yüksek tutarlı bağışlar için özel mesaj oluşturur (24999 TL+)
+func formatHighDonationMessage(req *ThrowDataRequest) string {
+	var sb strings.Builder
+
+	// Türkiye saati için UTC+3 ekle
+	turkeyTime := req.EventTime.Add(3 * time.Hour)
+
+	sb.WriteString("🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉\n")
+	sb.WriteString("💎💎💎 <b>YÜKSEK BAĞIŞ!</b> 💎💎💎\n")
+	sb.WriteString("🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉\n\n")
+
+	sb.WriteString(fmt.Sprintf("🚀 <b>Tutar:</b> <code>%.2f %s</code> 🚀\n\n", req.Amount, req.Currency))
+
+	sb.WriteString(fmt.Sprintf("📋 <b>Sipariş ID:</b> <code>%s</code>\n", req.OrderID))
+	sb.WriteString(fmt.Sprintf("📅 <b>Tarih:</b> %s\n\n", turkeyTime.Format("02.01.2006 15:04:05")))
+
+	if len(req.Items) > 0 {
+		sb.WriteString("📦 <b>Bağış Kalemleri:</b>\n")
+		for _, item := range req.Items {
+			sb.WriteString(fmt.Sprintf("  • %s (x%d) - %.2f %s\n", item.ItemName, item.Quantity, item.Price, req.Currency))
+		}
+		sb.WriteString("\n")
+	}
+
+	// UTM Bilgileri
+	hasUTM := req.UTMSource != "" || req.UTMMedium != "" || req.UTMCampaign != ""
+	if hasUTM {
+		sb.WriteString("📊 <b>UTM Bilgileri:</b>\n")
+		if req.UTMSource != "" {
+			sb.WriteString(fmt.Sprintf("  • Kaynak: %s\n", req.UTMSource))
+		}
+		if req.UTMMedium != "" {
+			sb.WriteString(fmt.Sprintf("  • Ortam: %s\n", req.UTMMedium))
+		}
+		if req.UTMCampaign != "" {
+			sb.WriteString(fmt.Sprintf("  • Kampanya: %s\n", req.UTMCampaign))
+		}
+		sb.WriteString("\n")
+	}
+
+	// Google Ads Bilgileri
+	hasGoogle := req.GadSource != "" || req.GadCampaignID != ""
+	if hasGoogle {
+		sb.WriteString("🔍 <b>Google Ads Bilgileri:</b>\n")
+		if req.GadSource != "" {
+			sb.WriteString(fmt.Sprintf("  • gad_source: %s\n", req.GadSource))
+		}
+		if req.GadCampaignID != "" {
+			sb.WriteString(fmt.Sprintf("  • gad_campaignid: %s\n", req.GadCampaignID))
+		}
+		sb.WriteString("\n")
+	}
+
+	sb.WriteString("👆 @hhayri @hamzaguuner\n")
+	sb.WriteString("🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉\n")
 
 	return sb.String()
 }
@@ -1103,31 +1171,36 @@ func handleExportCommand(bot *tgbotapi.BotAPI, chatID int64, args string) {
 	f.SetSheetName("Sheet1", mainSheet)
 	writeOrdersToSheet(f, mainSheet, orders, headerStyle, dataStyle, amountStyle)
 
-	// 2. UTM Source bazlı sheet'ler oluştur
+	// 2. Bağışları kategorize et:
+	// - UTM Source varsa → UTM sheet'i
+	// - UTM Source yok ama GAD Campaign ID varsa → GAD sheet'i (UTM sheet'ine eklenmez)
+	// - Ne UTM ne GAD varsa → Organik sheet'i
 	sourceMap := make(map[string][]Order)
+	gadMap := make(map[string][]Order)
+	var organikOrders []Order
+
 	for _, o := range orders {
-		source := o.UTMSource
-		if source == "" {
-			source = "Bilinmiyor"
+		hasUTM := o.UTMSource != ""
+		hasGAD := o.GadCampaignID != ""
+
+		if hasUTM {
+			// UTM kaynaklı bağış
+			sourceMap[o.UTMSource] = append(sourceMap[o.UTMSource], o)
+		} else if hasGAD {
+			// Sadece GAD kaynaklı bağış (UTM yok)
+			gadMap[o.GadCampaignID] = append(gadMap[o.GadCampaignID], o)
+		} else {
+			// Organik bağış (ne UTM ne GAD)
+			organikOrders = append(organikOrders, o)
 		}
-		sourceMap[source] = append(sourceMap[source], o)
 	}
 
-	// Kaynak sheet'lerini oluştur
+	// UTM Kaynak sheet'lerini oluştur
 	for source, sourceOrders := range sourceMap {
 		if len(sourceOrders) > 0 {
 			sheetName := sanitizeSheetName("Kaynak_" + source)
 			f.NewSheet(sheetName)
 			writeOrdersToSheet(f, sheetName, sourceOrders, headerStyle, dataStyle, amountStyle)
-		}
-	}
-
-	// 3. GAD Campaign ID bazlı sheet'ler oluştur
-	gadMap := make(map[string][]Order)
-	for _, o := range orders {
-		gadID := o.GadCampaignID
-		if gadID != "" {
-			gadMap[gadID] = append(gadMap[gadID], o)
 		}
 	}
 
@@ -1138,6 +1211,12 @@ func handleExportCommand(bot *tgbotapi.BotAPI, chatID int64, args string) {
 			f.NewSheet(sheetName)
 			writeOrdersToSheet(f, sheetName, gadOrders, headerStyle, dataStyle, amountStyle)
 		}
+	}
+
+	// Organik bağışlar sheet'i oluştur
+	if len(organikOrders) > 0 {
+		f.NewSheet("Organik")
+		writeOrdersToSheet(f, "Organik", organikOrders, headerStyle, dataStyle, amountStyle)
 	}
 
 	// 4. Özet sayfası ekle
@@ -1225,6 +1304,21 @@ func handleExportCommand(bot *tgbotapi.BotAPI, chatID int64, args string) {
 		}
 	}
 
+	// Organik bağışlar özeti
+	if len(organikOrders) > 0 {
+		row += 2
+		f.SetCellValue(summarySheet, fmt.Sprintf("A%d", row), "ORGANİK BAĞIŞLAR")
+		f.SetCellStyle(summarySheet, fmt.Sprintf("A%d", row), fmt.Sprintf("A%d", row), subTitleStyle)
+		row++
+		var organikTotal float64
+		for _, o := range organikOrders {
+			organikTotal += o.Amount
+		}
+		f.SetCellValue(summarySheet, fmt.Sprintf("A%d", row), "Organik (UTM/GAD yok)")
+		f.SetCellValue(summarySheet, fmt.Sprintf("B%d", row), len(organikOrders))
+		f.SetCellValue(summarySheet, fmt.Sprintf("C%d", row), fmt.Sprintf("%.2f TRY", organikTotal))
+	}
+
 	f.SetColWidth(summarySheet, "A", "A", 30)
 	f.SetColWidth(summarySheet, "B", "B", 15)
 	f.SetColWidth(summarySheet, "C", "C", 20)
@@ -1246,12 +1340,16 @@ func handleExportCommand(bot *tgbotapi.BotAPI, chatID int64, args string) {
 	}
 
 	// Sheet sayısını hesapla
-	sheetCount := 2 + len(sourceMap) + len(gadMap) // Özet + Tüm Bağışlar + kaynaklar + GAD'ler
+	organikSheetCount := 0
+	if len(organikOrders) > 0 {
+		organikSheetCount = 1
+	}
+	sheetCount := 2 + len(sourceMap) + len(gadMap) + organikSheetCount // Özet + Tüm Bağışlar + kaynaklar + GAD'ler + Organik
 
 	// Telegram'a gönder
 	doc := tgbotapi.NewDocument(chatID, tgbotapi.FilePath(filepath))
-	doc.Caption = fmt.Sprintf("📊 Bağış Raporu\n📁 %d kayıt | %d sayfa\n💰 Toplam: %.2f TRY\n\n📑 Sayfalar: Özet, Tüm Bağışlar, %d kaynak, %d GAD Campaign",
-		len(orders), sheetCount, totalAmount, len(sourceMap), len(gadMap))
+	doc.Caption = fmt.Sprintf("📊 Bağış Raporu\n📁 %d kayıt | %d sayfa\n💰 Toplam: %.2f TRY\n\n📑 Sayfalar: Özet, Tüm Bağışlar, %d UTM kaynak, %d GAD Campaign, %d Organik",
+		len(orders), sheetCount, totalAmount, len(sourceMap), len(gadMap), organikSheetCount)
 
 	if _, err := bot.Send(doc); err != nil {
 		log.Printf("Dosya gönderme hatası: %v", err)
